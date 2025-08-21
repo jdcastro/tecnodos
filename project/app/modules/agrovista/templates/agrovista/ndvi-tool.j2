@@ -25,6 +25,8 @@
     <button id="enter-fullscreen" class="{{ base_button_classes }}">Pantalla completa</button>
     <button id="exit-fullscreen" class="{{ base_button_classes }} hidden">Salir pantalla completa</button>
 
+    <button id="fit-bounds" class="{{ base_button_classes }}">Ajustar imagen</button>
+
     <label for="uploader" class="{{ base_button_classes }} cursor-pointer">Seleccionar archivo</label>
     <input type="file" id="uploader" accept=".tif,.tiff,.jp2" class="hidden" />
   </div>
@@ -50,7 +52,7 @@
       edit: { featureGroup: drawnItems }
     });
     map.addControl(drawCtl);
-    let overlay = null;
+    let overlay = null, bounds = null;
 
     async function uploadFile(file) {
       const fd = new FormData(); fd.append("file", file);
@@ -66,7 +68,7 @@
         document.getElementById("status").textContent = "Procesando...";
         const meta = await uploadFile(file);
         imgId = meta.id; imgWidth = meta.width; imgHeight = meta.height;
-        const bounds = [[0,0],[imgHeight,imgWidth]];
+        bounds = [[0,0],[imgHeight,imgWidth]];
         if (overlay) map.removeLayer(overlay);
         overlay = L.imageOverlay(`/api/agrovista/image/${imgId}.png`, bounds).addTo(map);
         map.fitBounds(bounds);
@@ -93,6 +95,10 @@
     const workzoneEl = document.getElementById('workzone');
     const enterFsBtn = document.getElementById('enter-fullscreen');
     const exitFsBtn = document.getElementById('exit-fullscreen');
+
+    document.getElementById('fit-bounds').addEventListener('click', () => {
+      if (overlay) map.fitBounds(bounds);
+    });
 
     enterFsBtn.addEventListener('click', () => {
       workzoneEl.requestFullscreen();
