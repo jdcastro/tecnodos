@@ -79,8 +79,13 @@
 } %}
 {# "name": "Panel de Informes", "url": url_for('foliage_report.reports_dashboard') #}
 {# "name": "examples", "url": url_for('foliage_report.cv_nutrientes') #}
+{% set vgindex_menu = {
+    "name": "Veg Index",
+    "url": url_for('agrovista.hello'),
+    }
+%}
 {% set sidebar_menu = {
-    "menu": sidebar_menu.menu + [reportes]
+    "menu": sidebar_menu.menu + [reportes] + [vgindex_menu]
 } %}
 
 <aside id="sidebar" class="z-10 w-64 flex-shrink-0 h-full overflow-y-auto sidebar-hidden md:block bg-gray-800 text-white"

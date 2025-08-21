@@ -71,7 +71,7 @@ class Config:
     """
 
     CORE = True
-    MODULES = ["foliage", "foliage_report"]
+    MODULES = ["foliage", "foliage_report", "agrovista"]
     THEME = "default"
     TITLE = os.getenv("TITLE")
     SECRET_KEY = os.getenv("SECRET_KEY")

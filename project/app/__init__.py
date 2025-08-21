@@ -87,6 +87,8 @@ def create_app():
     template_folder = os.path.join(app.root_path, "templates", theme)
     app.template_folder = template_folder
 
+
+    app.config.update(MAX_CONTENT_LENGTH = 2 * 1024 * 1024 * 1024,) # 2 GiB
     # Initialize extensions and blueprints
     init_extensions(app)
     register_blueprints(app)
