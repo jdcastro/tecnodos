@@ -1,12 +1,14 @@
-from flask import jsonify, request, send_file, abort
+import json
 import math
 from pathlib import Path
+
+from flask import jsonify, request, send_file, abort
 
 from app.extensions import db
 
 from . import agrovista_api as api
 from .controller import process_upload, load_ndvi
-from .helpers import polygon_mask, average_protein
+from .helpers import DATA_DIR, polygon_mask, average_protein
 from .models import NDVIImage
 
 
@@ -66,3 +68,27 @@ def protein():
     if math.isnan(avg):
         abort(400, description="invalid area")
     return jsonify(protein=round(avg, 2))
+
+
+@api.route("/index/<img_id>/<index_name>.png", methods=["GET"])
+def index_image(img_id: str, index_name: str):
+    """Return the image for a computed vegetation index."""
+
+    _validate_id(img_id)
+    filename = DATA_DIR / f"{index_name.lower()}_{img_id}.png"
+    if not filename.exists():
+        abort(404)
+    return send_file(filename, mimetype="image/png", max_age=3600)
+
+
+@api.route("/summary/<img_id>", methods=["GET"])
+def summary(img_id: str):
+    """Return nutrient status assessment for the processed image."""
+
+    _validate_id(img_id)
+    path = DATA_DIR / f"{img_id}_summary.json"
+    if not path.exists():
+        abort(404)
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+    return jsonify(data)
