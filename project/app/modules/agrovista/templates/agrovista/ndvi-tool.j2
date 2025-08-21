@@ -21,9 +21,13 @@
 
 {% block content %}
 <div id="workzone">
-<input type="file" id="uploader" accept=".tif,.tiff,.jp2" />
-<strong id="status">Sube un GeoTIFF con NIR</strong>
-<div id="map"></div>
+  <div class="mb-2 flex gap-2">
+    <button id="enter-fullscreen" class="{{ base_button_classes }}">Pantalla completa</button>
+    <button id="exit-fullscreen" class="{{ base_button_classes }} hidden">Salir pantalla completa</button>
+  </div>
+  <input type="file" id="uploader" accept=".tif,.tiff,.jp2" />
+  <strong id="status">Sube un GeoTIFF con NIR</strong>
+  <div id="map"></div>
 </div>
 {% endblock %}
 
@@ -76,6 +80,24 @@
       const data = await res.json();
       if (!res.ok) { alert(data.description || "Área inválida"); return; }
       alert(`Promedio de proteína: ${data.protein}%`);
+    });
+
+    const workzoneEl = document.getElementById('workzone');
+    const enterFsBtn = document.getElementById('enter-fullscreen');
+    const exitFsBtn = document.getElementById('exit-fullscreen');
+
+    enterFsBtn.addEventListener('click', () => {
+      workzoneEl.requestFullscreen();
+    });
+
+    exitFsBtn.addEventListener('click', () => {
+      document.exitFullscreen();
+    });
+
+    document.addEventListener('fullscreenchange', () => {
+      const isFs = document.fullscreenElement === workzoneEl;
+      enterFsBtn.classList.toggle('hidden', isFs);
+      exitFsBtn.classList.toggle('hidden', !isFs);
     });
   </script>
 {% endblock%}
