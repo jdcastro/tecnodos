@@ -24,8 +24,11 @@
   <div class="mb-2 flex gap-2">
     <button id="enter-fullscreen" class="{{ base_button_classes }}">Pantalla completa</button>
     <button id="exit-fullscreen" class="{{ base_button_classes }} hidden">Salir pantalla completa</button>
+
+    <label for="uploader" class="{{ base_button_classes }} cursor-pointer">Seleccionar archivo</label>
+    <input type="file" id="uploader" accept=".tif,.tiff,.jp2" class="hidden" />
   </div>
-  <input type="file" id="uploader" accept=".tif,.tiff,.jp2" />
+
   <strong id="status">Sube un GeoTIFF con NIR</strong>
   <div id="map"></div>
 </div>
