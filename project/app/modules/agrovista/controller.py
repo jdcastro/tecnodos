@@ -39,6 +39,7 @@ def process_upload(file_storage) -> dict:
         except Exception:
             db.session.rollback()
             raise
+
         return {"id": record.id, "width": record.width, "height": record.height}
     finally:
         try:

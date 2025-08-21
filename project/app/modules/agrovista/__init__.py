@@ -1,6 +1,8 @@
 from flask import Blueprint
 
+
 from app.extensions import db
+
 
 agrovista = Blueprint(
     "agrovista",
