@@ -129,3 +129,5 @@ celerybeat.pid
 
 # Descargas
 downloads/
+project/app/modules/agrovista/data/*
+!project/app/modules/agrovista/data/.gitkeep

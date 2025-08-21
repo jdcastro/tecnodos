@@ -56,7 +56,7 @@
       map.addLayer(layer);
       const latlngs = layer.getLatLngs()[0];
       const verts = latlngs.map(ll => [ll.lng, ll.lat]);
-      const res = await fetch("/api/ndvi/protein", {
+      const res = await fetch("/api/agrovista/protein", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({ id: imgId, vertices: verts })
