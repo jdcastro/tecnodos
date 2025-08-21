@@ -1,13 +1,20 @@
 from flask import jsonify, request, send_file, abort
 import math
+from pathlib import Path
+
+from app.extensions import db
+
 from . import agrovista_api as api
 from .controller import process_upload, load_ndvi
-from .helpers import DATA_DIR, polygon_mask, average_protein
+from .helpers import polygon_mask, average_protein
+from .models import NDVIImage
+
 
 def _validate_id(value: str) -> str:
     if not value or not value.isalnum():
         abort(400, description="invalid id")
     return value
+
 
 def _validate_vertices(vertices):
     if not isinstance(vertices, list) or len(vertices) < 3:
@@ -24,6 +31,7 @@ def _validate_vertices(vertices):
         out.append([float(x), float(y)])
     return out
 
+
 @api.route("/upload", methods=["POST"])
 def upload():
     try:
@@ -34,13 +42,18 @@ def upload():
     except Exception:
         abort(500, description="processing error")
 
+
 @api.route("/image/<img_id>.png", methods=["GET"])
 def image(img_id: str):
     _validate_id(img_id)
-    path = DATA_DIR / f"{img_id}.png"
+    record = db.session.get(NDVIImage, img_id)
+    if not record:
+        abort(404)
+    path = Path(record.png_path)
     if not path.exists():
         abort(404)
     return send_file(path, mimetype="image/png", max_age=3600)
+
 
 @api.route("/protein", methods=["POST"])
 def protein():
