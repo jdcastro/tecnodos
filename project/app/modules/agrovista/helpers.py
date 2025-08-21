@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import numpy as np
 import rasterio
 from matplotlib import pyplot as plt
@@ -8,6 +9,14 @@ matplotlib.use("Agg")
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+RESULTS_FILE = DATA_DIR / "indices.json"
+RESULTS: dict[str, object] = {}
+
+
+def _save_results() -> None:
+    with RESULTS_FILE.open("w", encoding="utf-8") as fh:
+        json.dump(RESULTS, fh)
+
 
 ALLOWED_EXTS = {".tif", ".tiff", ".jp2"}
 
@@ -62,3 +71,71 @@ def average_protein(ndvi: np.ndarray, mask: np.ndarray) -> float:
     proteins = [ndvi_to_protein(float(v)) for v in vals]
     proteins = [p for p in proteins if not np.isnan(p)]
     return float(np.mean(proteins)) if proteins else float("nan")
+
+
+def calculate_vi() -> list[float]:
+    """Estimate the Vegetation Index (VI) from multispectral data.
+
+    A production version would use the green and red bands of an image and
+    compute ``(green - red) / (green + red)`` for each pixel.
+
+    Returns:
+        list[float]: Example VI values.
+    """
+
+    vi_values = [0.21, 0.48, 0.65]
+    RESULTS["vi"] = vi_values
+    _save_results()
+    return vi_values
+
+
+def calculate_gli() -> list[float]:
+    """Calculate the Green Leaf Index (GLI) from RGB bands.
+
+    GLI is typically ``(2 * G - R - B) / (2 * G + R + B)`` and highlights
+    vegetation vigor from true-color imagery.
+
+    Returns:
+        list[float]: Example GLI values.
+    """
+
+    gli_values = [0.10, 0.37, 0.58]
+    RESULTS["gli"] = gli_values
+    _save_results()
+    return gli_values
+
+
+def calculate_vari() -> list[float]:
+    """Derive the Visible Atmospherically Resistant Index (VARI).
+
+    VARI is computed as ``(G - R) / (G + R - B)`` to reduce atmospheric
+    influence when using RGB images.
+
+    Returns:
+        list[float]: Example VARI values.
+    """
+
+    vari_values = [0.05, 0.22, 0.41]
+    RESULTS["vari"] = vari_values
+    _save_results()
+    return vari_values
+
+
+def generate_deficiency_report() -> dict:
+    """Generate a nutrient deficiency report from vegetation indices.
+
+    In a real scenario, thresholds on VI, GLI and VARI would be analysed to
+    detect possible nutrient issues (e.g. nitrogen or potassium shortages).
+
+    Returns:
+        dict: Example report of nutrient statuses.
+    """
+
+    report = {
+        "nitrogen": "low",
+        "phosphorus": "adequate",
+        "potassium": "high",
+    }
+    RESULTS["deficiency_report"] = report
+    _save_results()
+    return report
