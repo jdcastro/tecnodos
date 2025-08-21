@@ -71,7 +71,7 @@
         bounds = [[0,0],[imgHeight,imgWidth]];
         if (overlay) map.removeLayer(overlay);
         overlay = L.imageOverlay(`/api/agrovista/image/${imgId}.png`, bounds).addTo(map);
-        map.fitBounds(bounds);
+        fitImage();
         document.getElementById("status").textContent = "Dibuja un polígono o rectángulo sobre el mapa";
       } catch (err) {
         document.getElementById("status").textContent = "Error al procesar el archivo";
@@ -96,9 +96,18 @@
     const enterFsBtn = document.getElementById('enter-fullscreen');
     const exitFsBtn = document.getElementById('exit-fullscreen');
 
-    document.getElementById('fit-bounds').addEventListener('click', () => {
-      if (overlay) map.fitBounds(bounds);
-    });
+    function fitImage() {
+      if (!overlay) return;
+      map.invalidateSize();
+      const size = map.getSize();
+      const scale = Math.min(size.x / imgWidth, size.y / imgHeight);
+      const minZoom = Math.min(0, Math.floor(Math.log2(scale)));
+      map.setMinZoom(minZoom);
+      map.fitBounds(bounds);
+    }
+
+    document.getElementById('fit-bounds').addEventListener('click', fitImage);
+
 
     enterFsBtn.addEventListener('click', () => {
       workzoneEl.requestFullscreen();
