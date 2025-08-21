@@ -90,6 +90,8 @@ error.txt
 logs.txt
 log.txt
 app_errors.log
+errors.log
+errors.log.*
 
 ### Sistemas operativos ###
 # Windows
