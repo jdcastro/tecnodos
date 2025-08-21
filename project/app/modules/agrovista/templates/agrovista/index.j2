@@ -1,24 +1,41 @@
-<!doctype html>
-<html lang="es">
-<head>
-  <meta charset="utf-8" />
-  <title>NDVI Tool</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+{# index.j2 #}
+{% extends "base.j2" %}
+{% set dashboard = true %}
+{% from "settings/_ui_class.j2" import base_button_classes, input_bg_color, border_color, hover_bg_color, focus_ring_color, button_bg_color, delete_button_bg_color, input_focus_bg_color, text_color %}
+{% from "macros/_forms.j2" import render_alert %} {# Import alert macro if you have one #}
+
+{% set data_menu = {
+"menu": [
+{"name": "Home", "url": url_for('core.index') },
+{"name": "Logout", "url": url_for('core.logout') },
+{"name": "Profile", "url": url_for('core.profile') }
+]
+} %}
+{% set title = "NDVI Tool" %} 
+{% block extra_css %}
+    {{ css_code|safe }}
+    {{ super() }}
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
   <style>
-    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-    header { padding: 8px 12px; border-bottom: 1px solid #eee; display:flex; gap:12px; align-items:center }
     #map { height: calc(100vh - 56px); }
   </style>
-</head>
-<body>
-  <header>
-    <input type="file" id="uploader" accept=".tif,.tiff,.jp2" />
-    <strong id="status">Sube un GeoTIFF con NIR</strong>
-  </header>
-  <div id="map"></div>
+{% endblock %}
+{% block extra_head %}
+{{ js_code|safe }}
+{{ super() }}
+{% endblock %}
 
+{% block content %}
+<input type="file" id="uploader" accept=".tif,.tiff,.jp2" />
+<strong id="status">Sube un GeoTIFF con NIR</strong>
+<div id="map"></div>
+{% endblock %}
+
+
+{% block extra_js %}
+{{ js_code|safe }}
+{{ super() }}
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
   <script>
@@ -66,5 +83,4 @@
       alert(`Promedio de proteína: ${data.protein}%`);
     });
   </script>
-</body>
-</html>
+{% endblock%}
