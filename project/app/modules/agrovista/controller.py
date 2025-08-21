@@ -1,8 +1,14 @@
 import uuid
 from pathlib import Path
+from datetime import datetime
+
 import numpy as np
 from werkzeug.utils import secure_filename
+
+from app.extensions import db
 from .helpers import DATA_DIR, allowed_file, compute_ndvi, save_png
+from .models import NDVIImage
+
 
 def process_upload(file_storage) -> dict:
     if not file_storage or not allowed_file(file_storage.filename):
@@ -13,18 +19,35 @@ def process_upload(file_storage) -> dict:
     try:
         ndvi = compute_ndvi(tmp_path)
         img_id = uuid.uuid4().hex
-        np.save(DATA_DIR / f"{img_id}.npy", ndvi)
-        save_png(ndvi, DATA_DIR / f"{img_id}.png")
+        npy_path = DATA_DIR / f"{img_id}.npy"
+        png_path = DATA_DIR / f"{img_id}.png"
+        np.save(npy_path, ndvi)
+        save_png(ndvi, png_path)
         h, w = ndvi.shape
-        return {"id": img_id, "width": w, "height": h}
+        record = NDVIImage(
+            id=img_id,
+            filename=safe,
+            png_path=str(png_path),
+            npy_path=str(npy_path),
+            width=w,
+            height=h,
+            upload_date=datetime.utcnow(),
+        )
+        db.session.add(record)
+        db.session.commit()
+        return {"id": record.id, "width": record.width, "height": record.height}
     finally:
         try:
             tmp_path.unlink(missing_ok=True)
         except Exception:
             pass
 
+
 def load_ndvi(img_id: str) -> np.ndarray:
-    path = DATA_DIR / f"{img_id}.npy"
+    record = db.session.get(NDVIImage, img_id)
+    if not record:
+        raise FileNotFoundError("ndvi not found")
+    path = Path(record.npy_path)
     if not path.exists():
         raise FileNotFoundError("ndvi not found")
     return np.load(path)
