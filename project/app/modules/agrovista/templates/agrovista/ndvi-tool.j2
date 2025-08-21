@@ -36,6 +36,15 @@
   <div id="results" class="mt-2 p-2 border">
     Promedio de proteína: <span id="protein-output">--</span>%
   </div>
+  <div id="indices" class="mt-2 flex gap-2">
+    <img id="vi-index" class="hidden border" alt="VI" />
+    <img id="gli-index" class="hidden border" alt="GLI" />
+    <img id="vari-index" class="hidden border" alt="VARI" />
+  </div>
+  <div id="summary-box" class="mt-2 p-2 border">
+    Estado nutricional: <span id="summary-overall">--</span>
+    <div>Problemas potenciales: <span id="summary-issues">--</span></div>
+  </div>
 </div>
 {% endblock %}
 
@@ -76,6 +85,17 @@
         overlay = L.imageOverlay(`/api/agrovista/image/${imgId}.png`, bounds).addTo(map);
         fitImage();
         document.getElementById("status").textContent = "Dibuja un polígono o rectángulo sobre el mapa";
+        ["vi", "gli", "vari"].forEach((idx) => {
+          const el = document.getElementById(`${idx}-index`);
+          el.src = `/api/agrovista/index/${imgId}/${idx.toUpperCase()}.png`;
+          el.classList.remove("hidden");
+        });
+        const sumRes = await fetch(`/api/agrovista/summary/${imgId}`);
+        if (sumRes.ok) {
+          const sum = await sumRes.json();
+          document.getElementById("summary-overall").textContent = sum.overall;
+          document.getElementById("summary-issues").textContent = (sum.potential_issues || []).join(", ") || "Ninguno";
+        }
       } catch (err) {
         document.getElementById("status").textContent = "Error al procesar el archivo";
       }
