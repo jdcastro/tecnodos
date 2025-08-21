@@ -4,14 +4,7 @@
 {% from "settings/_ui_class.j2" import base_button_classes, input_bg_color, border_color, hover_bg_color, focus_ring_color, button_bg_color, delete_button_bg_color, input_focus_bg_color, text_color %}
 {% from "macros/_forms.j2" import render_alert %} {# Import alert macro if you have one #}
 
-{% set data_menu = {
-"menu": [
-{"name": "Home", "url": url_for('core.index') },
-{"name": "Logout", "url": url_for('core.logout') },
-{"name": "Profile", "url": url_for('core.profile') }
-]
-} %}
-{% set title = "NDVI Tool" %} 
+
 {% block extra_css %}
     {{ css_code|safe }}
     {{ super() }}
@@ -27,9 +20,11 @@
 {% endblock %}
 
 {% block content %}
+<div id="workzone">
 <input type="file" id="uploader" accept=".tif,.tiff,.jp2" />
 <strong id="status">Sube un GeoTIFF con NIR</strong>
 <div id="map"></div>
+</div>
 {% endblock %}
 
 
