@@ -1,70 +1,86 @@
-<!doctype html>
-<html lang="es">
-<head>
-  <meta charset="utf-8" />
-  <title>NDVI Tool</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
-  <style>
-    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-    header { padding: 8px 12px; border-bottom: 1px solid #eee; display:flex; gap:12px; align-items:center }
-    #map { height: calc(100vh - 56px); }
-  </style>
-</head>
-<body>
-  <header>
-    <input type="file" id="uploader" accept=".tif,.tiff,.jp2" />
-    <strong id="status">Sube un GeoTIFF con NIR</strong>
-  </header>
-  <div id="map"></div>
+{% extends "base.j2" %}
+{% set dashboard = true %}
+{% from "settings/_ui_class.j2" import base_button_classes, border_color, hover_bg_color, focus_ring_color, bg_color as theme_bg_color, text_color %}
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
-  <script>
-    let imgId = null, imgWidth = 0, imgHeight = 0;
-    const map = L.map('map', { crs: L.CRS.Simple }).setView([0,0], 0);
-    const drawCtl = new L.Control.Draw({ draw: { polygon:true, rectangle:true, polyline:false, circle:false, marker:false }});
-    map.addControl(drawCtl);
-    let overlay = null;
+{% set main_clases = "flex flex-col flex-grow h-full p-0" %}
+{% set bg_color = "" %}
+{% set rounded = "" %}
+{% set shadow = "" %}
+{% set padding = "" %}
 
-    async function uploadFile(file) {
-      const fd = new FormData(); fd.append("file", file);
-      const res = await fetch("/api/agrovista/upload", { method: "POST", body: fd });
-      if (!res.ok) throw new Error(await res.text());
-      return res.json();
-    }
+{% block extra_css %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+{% endblock %}
 
-    document.getElementById("uploader").addEventListener("change", async (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-      try {
-        document.getElementById("status").textContent = "Procesando...";
-        const meta = await uploadFile(file);
-        imgId = meta.id; imgWidth = meta.width; imgHeight = meta.height;
-        const bounds = [[0,0],[imgHeight,imgWidth]];
-        if (overlay) map.removeLayer(overlay);
-        overlay = L.imageOverlay(`/api/agrovista/image/${imgId}.png`, bounds).addTo(map);
-        map.fitBounds(bounds);
-        document.getElementById("status").textContent = "Dibuja un polígono o rectángulo sobre el mapa";
-      } catch (err) {
-        document.getElementById("status").textContent = "Error al procesar el archivo";
-      }
-    });
+{% block content %}
+<div class="flex flex-col flex-1 h-full">
+  <div class="flex items-center gap-3 p-3 border-b border-gray-300 bg-white dark:bg-gray-800">
+    <input type="file" id="uploader" accept=".tif,.tiff,.jp2" class="{{ text_color }}" />
+    <span id="status" class="text-sm {{ text_color }}">Sube un GeoTIFF con NIR</span>
+    <button id="fullscreen-btn" class="{{ base_button_classes }} {{ border_color }} {{ theme_bg_color }} {{ text_color }} {{ hover_bg_color }} {{ focus_ring_color }}">Pantalla completa</button>
+  </div>
+  <div id="map" class="flex-1"></div>
+</div>
+{% endblock %}
 
-    map.on(L.Draw.Event.CREATED, async ({ layer }) => {
-      map.addLayer(layer);
-      const latlngs = layer.getLatLngs()[0];
-      const verts = latlngs.map(ll => [ll.lng, ll.lat]);
-      const res = await fetch("/api/ndvi/protein", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ id: imgId, vertices: verts })
-      });
-      const data = await res.json();
-      if (!res.ok) { alert(data.description || "Área inválida"); return; }
-      alert(`Promedio de proteína: ${data.protein}%`);
-    });
-  </script>
-</body>
-</html>
+{% block extra_js %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script>
+let imgId = null, imgWidth = 0, imgHeight = 0;
+const map = L.map('map', { crs: L.CRS.Simple }).setView([0,0], 0);
+const drawCtl = new L.Control.Draw({ draw: { polygon:true, rectangle:true, polyline:false, circle:false, marker:false }});
+map.addControl(drawCtl);
+let overlay = null;
+
+async function uploadFile(file) {
+  const fd = new FormData(); fd.append("file", file);
+  const res = await fetch("/api/agrovista/upload", { method: "POST", body: fd });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+document.getElementById("uploader").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    document.getElementById("status").textContent = "Procesando...";
+    const meta = await uploadFile(file);
+    imgId = meta.id; imgWidth = meta.width; imgHeight = meta.height;
+    const bounds = [[0,0],[imgHeight,imgWidth]];
+    if (overlay) map.removeLayer(overlay);
+    overlay = L.imageOverlay(`/api/agrovista/image/${imgId}.png`, bounds).addTo(map);
+    map.fitBounds(bounds);
+    document.getElementById("status").textContent = "Dibuja un polígono o rectángulo sobre el mapa";
+  } catch (err) {
+    document.getElementById("status").textContent = "Error al procesar el archivo";
+  }
+});
+
+map.on(L.Draw.Event.CREATED, async ({ layer }) => {
+  map.addLayer(layer);
+  const latlngs = layer.getLatLngs()[0];
+  const verts = latlngs.map(ll => [ll.lng, ll.lat]);
+  const res = await fetch("/api/ndvi/protein", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ id: imgId, vertices: verts })
+  });
+  const data = await res.json();
+  if (!res.ok) { alert(data.description || "Área inválida"); return; }
+  alert(`Promedio de proteína: ${data.protein}%`);
+});
+
+document.getElementById("fullscreen-btn").addEventListener("click", () => {
+  const elem = document.getElementById("map");
+  if (!document.fullscreenElement) {
+    if (elem.requestFullscreen) elem.requestFullscreen();
+  } else {
+    if (document.exitFullscreen) document.exitFullscreen();
+  }
+  setTimeout(() => map.invalidateSize(), 200);
+});
+</script>
+{% endblock %}
+
