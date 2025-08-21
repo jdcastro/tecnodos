@@ -22,9 +22,18 @@ def compute_ndvi(src_path: Path) -> np.ndarray:
         if nodata is not None:
             red = np.ma.masked_equal(red, nodata)
             nir = np.ma.masked_equal(nir, nodata)
-        np.seterr(divide="ignore", invalid="ignore")
-        ndvi = (nir - red) / (nir + red)
-        return np.round(ndvi.filled(np.nan), 2)
+        # Avoid divide-by-zero and invalid warnings during the NDVI calculation
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ndvi = (nir - red) / (nir + red)
+
+        # ``ndvi`` is a plain ``ndarray`` when the source image has no nodata
+        # values. Calling ``filled`` on such arrays raises ``AttributeError``
+        # which previously bubbled up and resulted in a 500 error during file
+        # uploads. Handle both masked and unmasked arrays gracefully.
+        if np.ma.isMaskedArray(ndvi):
+            ndvi = ndvi.filled(np.nan)
+
+        return np.round(ndvi, 2)
 
 def save_png(ndvi: np.ndarray, out_path: Path) -> None:
     norm = Normalize(vmin=-1, vmax=1)
