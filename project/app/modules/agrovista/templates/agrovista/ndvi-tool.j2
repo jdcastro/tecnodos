@@ -2,364 +2,484 @@
 {% extends "base.j2" %}
 {% set dashboard = true %}
 {% from "settings/_ui_class.j2" import base_button_classes, input_bg_color, border_color, hover_bg_color, focus_ring_color, button_bg_color, delete_button_bg_color, input_focus_bg_color, text_color %}
-{% from "macros/_forms.j2" import render_alert %} {# Import alert macro if you have one #}
-
+{% from "macros/_forms.j2" import render_alert %}
 
 {% block extra_css %}
-    {{ css_code|safe }}
-    {{ super() }}
+  {{ css_code|safe }}
+  {{ super() }}
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
   <style>
-    #map { height: calc(100vh - 56px); }
+    /* --- Layout: right split (sidebar | map) --- */
+    #right-split{
+      display:grid;
+      grid-template-columns:320px 1fr;
+      gap:1rem;
+      height:calc(100vh - 56px);
+    }
+    #map{ height:100%; position:relative; }
+
+    /* Keep space for right ruler (+ shift default right controls) */
+    :root { --ruler-right-w: 64px; }
+    #map .leaflet-top.leaflet-right{ right:var(--ruler-right-w,64px); }
+
+    /* Drop left controls by 40px to avoid top ruler overlap */
+    .leaflet-top.leaflet-left{ top:40px; }
+
+    .leaflet-top,.leaflet-bottom{ pointer-events:none; }
+    .leaflet-control{ pointer-events:auto; }
+
+    /* Sidebar with internal scroll without stretching the grid */
+    .vars-panel{
+      display:flex; flex-direction:column; overflow:hidden;
+    }
+    .vars-scroll{ overflow:auto; }
+
+    /* (Optional) Hide Leaflet attribution – keep it visible in production to respect license */
+    .leaflet-control-attribution.leaflet-control {
+      display:none !important; visibility:hidden !important; opacity:0 !important; pointer-events:none !important;
+    }
   </style>
 {% endblock %}
+
 {% block extra_head %}
-{{ js_code|safe }}
-{{ super() }}
+  {{ js_code|safe }}
+  {{ super() }}
 {% endblock %}
 
 {% block content %}
 <div id="workzone" class="bg-white p-5">
-  <div class="mb-2 flex gap-2">
-    <button id="enter-fullscreen" class="{{ base_button_classes }}">Pantalla completa</button>
-    <button id="exit-fullscreen" class="{{ base_button_classes }} hidden">Salir pantalla completa</button>
-
-    <button id="fit-bounds" class="{{ base_button_classes }}">Ajustar imagen</button>
-
-    <label for="uploader" class="{{ base_button_classes }} cursor-pointer">Seleccionar archivo</label>
+  <!-- Top bar -->
+  <div class="mb-3 flex gap-2 justify-center">
+    <button id="enter-fullscreen" class="{{ base_button_classes }}" title="Pantalla completa" aria-label="Pantalla completa">Pantalla completa</button>
+    <button id="exit-fullscreen"  class="{{ base_button_classes }} hidden" title="Salir pantalla completa" aria-label="Salir pantalla completa">Salir pantalla completa</button>
+    <button id="fit-bounds"       class="{{ base_button_classes }}" title="Ajustar imagen" aria-label="Ajustar imagen">Ajustar imagen</button>
+    <label for="uploader" class="{{ base_button_classes }} cursor-pointer" title="Seleccionar archivo GeoTIFF/JP2" aria-label="Seleccionar archivo GeoTIFF/JP2">Seleccionar archivo</label>
     <input type="file" id="uploader" accept=".tif,.tiff,.jp2" class="hidden" />
   </div>
 
-  <strong id="status">Sube un GeoTIFF con NIR</strong>
-  <div id="protein-box" class="mt-2 p-2 border"> Promedio de proteína: --% </div>
-  <div id="map"></div>
+  <!-- Right side -->
+  <div id="right-split">
+    <!-- Variables -->
+    <aside class="vars-panel border rounded-lg p-4 bg-gray-50">
+      <div class="vars-scroll space-y-3">
+        <strong id="status" class="block text-sm" aria-live="polite">Sube un GeoTIFF con NIR</strong>
+
+        <div id="area" class="p-2 border rounded text-sm">
+          <h3 class="font-semibold mb-2">Área</h3>
+          <div id="area-box" aria-live="polite">Selecciona un polígono</div>
+        </div>
+
+        <div id="protein-box" class="p-2 border rounded text-sm" aria-live="polite">
+          Promedio de proteína: --%
+        </div>
+
+        <div>
+          <h3 class="font-semibold mb-2">Variables</h3>
+          <ul id="variables" class="space-y-2">
+            <li class="text-sm">Nitrógeno</li>
+            <li class="text-sm">VI</li>
+            <li class="text-sm">GLI</li>
+            <li class="text-sm">VARI</li>
+          </ul>
+        </div>
+
+        <hr class="my-4">
+      </div>
+    </aside>
+
+    <!-- Map -->
+    <section class="relative border rounded-lg overflow-hidden">
+      <div id="map"></div>
+    </section>
+  </div>
 </div>
 {% endblock %}
 
-
 {% block extra_js %}
-{{ js_code|safe }}
-{{ super() }}
+  {{ js_code|safe }}
+  {{ super() }}
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
   <script>
-    let imgId = null, imgWidth = 0, imgHeight = 0;
-    let metersPerPixelX = null, metersPerPixelY = null;
-    let overlay = null, bounds = null;
+  /* -------------------------------
+   * Map UI Module (IIFE)
+   * Responsibilities: state, utils, map init, rulers, upload, draw events, fullscreen
+   * ------------------------------- */
+  (function(){
+    "use strict";
 
-    const map = L.map('map', { crs: L.CRS.Simple }).setView([0, 0], 0);
+    /* ---------- Config ---------- */
+    const ENDPOINTS = {
+      upload: "/api/agrovista/upload",
+      image:  (id) => `/api/agrovista/image/${id}.png`,
+      protein:"/api/agrovista/protein"
+    };
+    const RIGHT_RULER_W = 64;  // px
+    const TOP_RULER_H   = 28;  // px
+
+    /* ---------- State ---------- */
+    let imageId = null;
+    let imageWidth = 0, imageHeight = 0;
+    let mppX = null, mppY = null; // meters-per-pixel
+    let overlay = null, imgBounds = null;
+
+    /* ---------- DOM ---------- */
+    const el = {
+      workzone: document.getElementById("workzone"),
+      map:      document.getElementById("map"),
+      status:   document.getElementById("status"),
+      areaBox:  document.getElementById("area-box"),
+      protein:  document.getElementById("protein-box"),
+      uploader: document.getElementById("uploader"),
+      btnFit:   document.getElementById("fit-bounds"),
+      btnFsIn:  document.getElementById("enter-fullscreen"),
+      btnFsOut: document.getElementById("exit-fullscreen"),
+    };
+
+    /* Ensure area box exists in DOM */
+    if(!el.areaBox){
+      const container = document.querySelector("#area") || document.body;
+      const d = document.createElement("div");
+      d.id = "area-box"; d.className = "p-2 border rounded text-sm";
+      d.textContent = "Selecciona un polígono";
+      d.setAttribute("aria-live","polite");
+      container.appendChild(d);
+      el.areaBox = d;
+    }
+
+    /* ---------- Utils ---------- */
+    // Nice step length selector for scales
+    function niceStep(length){
+      const seeds = [1,2,5];
+      const p = Math.pow(10, Math.floor(Math.log10(length || 1)));
+      let best = p;
+      for(const s of seeds){
+        const cand = s * p;
+        if(cand <= length) best = cand;
+        if(cand >= length * 0.6) return cand;
+      }
+      return best;
+    }
+    function fmtLinear(m){
+      if(m >= 1000) return (m/1000).toFixed(m % 1000 === 0 ? 0 : 1) + " km";
+      if(m >= 1)    return Math.round(m) + " m";
+      return (m*100).toFixed(0) + " cm";
+    }
+    function fmtAreaMeters(m2){
+      if(m2 >= 1e6) return (m2/1e6).toFixed(m2 % 1e6 === 0 ? 0 : 2) + " km²";
+      if(m2 >= 1e4) return (m2/1e4).toFixed(2) + " ha";
+      if(m2 >= 1)   return Math.round(m2) + " m²";
+      return (m2*1e4).toFixed(0) + " cm²";
+    }
+    function fmtPixels(px){ return Math.round(px) + " px"; }
+    function fmtAreaPx2(px2){
+      if(mppX != null){
+        const _mppY = (mppY != null) ? mppY : mppX;
+        const m2 = px2 * mppX * _mppY;
+        return fmtAreaMeters(m2);
+      }
+      return Math.round(px2) + " px²";
+    }
+    // Shoelace area in "map units" (CRS.Simple => lat=Y, lng=X)
+    function polygonAreaPx2(latlngs){
+      const pts = latlngs.map(ll => [ll.lng, ll.lat]);
+      let s = 0;
+      for(let i=0, n=pts.length; i<n; i++){
+        const [x1,y1] = pts[i];
+        const [x2,y2] = pts[(i+1)%n];
+        s += x1*y2 - x2*y1;
+      }
+      return Math.abs(s)/2;
+    }
+    function setStatus(msg){ if(el.status) el.status.textContent = msg; }
+
+    /* ---------- Leaflet Map ---------- */
+    const map = L.map("map", { crs: L.CRS.Simple }).setView([0,0], 0);
+
     const drawnItems = new L.FeatureGroup();
     map.addLayer(drawnItems);
 
     const drawCtl = new L.Control.Draw({
-      draw: {
-        polygon: true,
-        rectangle: true,
-        polyline: false,
-        circle: false,
-        marker: false,
-        circlemarker: false
-      },
-      edit: { featureGroup: drawnItems }
+      draw:{ polygon:true, rectangle:true, polyline:false, circle:false, marker:false, circlemarker:false },
+      edit:{ featureGroup: drawnItems }
     });
     map.addControl(drawCtl);
 
-    const workzoneEl = document.getElementById('workzone');
-    const enterFsBtn = document.getElementById('enter-fullscreen');
-    const exitFsBtn = document.getElementById('exit-fullscreen');
-    const proteinBox = document.getElementById('protein-box');
-    const statusEl = document.getElementById('status');
-
-    function niceStep(length) {
-      const steps = [1, 2, 5];
-      const p = Math.pow(10, Math.floor(Math.log10(length || 1)));
-      let best = p;
-      for (let s of steps) {
-        const c = s * p;
-        if (c <= length) best = c;
-        if (c >= length * 0.6) return c;
-      }
-      return best;
-    }
-    function formatMeters(m) {
-      if (m >= 1000) return (m / 1000).toFixed(m % 1000 === 0 ? 0 : 1) + ' km';
-      if (m >= 1) return Math.round(m) + ' m';
-      return (m * 100).toFixed(0) + ' cm';
-    }
-    function formatPixels(px) { return Math.round(px) + ' px'; }
-
-    function addSimpleScaleControl(map, getMppXOrNull) {
+    /* Simple scale control that respects mpp if present */
+    function addSimpleScaleControl(getMppX){
       const ScaleCtl = L.Control.extend({
-        options: { position: 'bottomleft' },
-        onAdd: function () {
-          const div = L.DomUtil.create('div', 'leaflet-control scale-simple');
-          Object.assign(div.style, {
-            background: 'rgba(255,255,255,0.9)', padding: '6px 8px',
-            border: '1px solid #ddd', borderRadius: '6px',
-            font: '12px/1.2 system-ui, sans-serif', userSelect: 'none'
+        options:{ position:"bottomleft" },
+        onAdd:function(){
+          const box = L.DomUtil.create("div","leaflet-control scale-simple");
+          Object.assign(box.style, {
+            background:"rgba(255,255,255,0.9)",
+            padding:"6px 8px",
+            border:"1px solid #ddd",
+            borderRadius:"6px",
+            font:"12px/1.2 system-ui, sans-serif",
+            userSelect:"none"
           });
-          this._label = document.createElement('div');
-          this._label.style.textAlign = 'center';
-          this._bar = document.createElement('div');
-          Object.assign(this._bar.style, { height: '6px', marginTop: '4px', background: '#333', width: '100px' });
-          div.appendChild(this._label);
-          div.appendChild(this._bar);
-          map.on('zoom move resize', this._update, this);
-          this._container = div;
+          this._label = document.createElement("div");
+          this._label.style.textAlign = "center";
+          this._bar = document.createElement("div");
+          Object.assign(this._bar.style, { height:"6px", marginTop:"4px", background:"#333", width:"100px" });
+          box.appendChild(this._label);
+          box.appendChild(this._bar);
+          map.on("zoom move resize", this._update, this);
+          this._container = box;
           this._update();
-          return div;
+          return box;
         },
-        onRemove: function () { map.off('zoom move resize', this._update, this); },
-        _update: function () {
-          if (!this._container) return;
-          const mppX = getMppXOrNull();
-          const targetScreenPx = 150;
+        onRemove:function(){ map.off("zoom move resize", this._update, this); },
+        _update:function(){
+          if(!this._container) return;
+          const mpp = getMppX();
+          const S = 150; // px sample span
+          const a = map.containerPointToLatLng([0,0]);
+          const b = map.containerPointToLatLng([S,0]);
+          const units = Math.abs(b.lng - a.lng);
+          const totalMeters = (mpp != null) ? units * mpp : null;
 
-          const ll1 = map.containerPointToLatLng([0, 0]);
-          const ll2 = map.containerPointToLatLng([targetScreenPx, 0]);
-          const imgUnits = Math.abs(ll2.lng - ll1.lng);
-          const totalMeters = (mppX != null) ? imgUnits * mppX : null;
-
-          let labelValue, pxLen;
-          if (totalMeters != null) {
-            const niceM = niceStep(totalMeters);
-            labelValue = formatMeters(niceM);
-            pxLen = targetScreenPx * (niceM / totalMeters);
+          let label, barPx;
+          if(totalMeters != null){
+            const n = niceStep(totalMeters);
+            label = fmtLinear(n);
+            barPx = S * (n / totalMeters);
           } else {
-            const niceU = niceStep(imgUnits);
-            labelValue = formatPixels(niceU);
-            pxLen = targetScreenPx * (niceU / imgUnits);
+            const n = niceStep(units);
+            label = fmtPixels(n);
+            barPx = S * (n / units);
           }
-          this._label.textContent = labelValue;
-          this._bar.style.width = Math.max(30, Math.min(220, pxLen)) + 'px';
+          this._label.textContent = label;
+          this._bar.style.width = Math.max(30, Math.min(220, barPx)) + "px";
         }
       });
       map.addControl(new ScaleCtl());
     }
+    addSimpleScaleControl(() => mppX);
 
-    addSimpleScaleControl(map, () => metersPerPixelX);
+    /* ---------- Rulers (Top & Right Canvases) ---------- */
+    const rulerTop = document.createElement("canvas");
+    const rulerRight = document.createElement("canvas");
+    Object.assign(rulerTop.style,  { position:"absolute", right:"0", top:"0", height:TOP_RULER_H+"px", width:"100%", pointerEvents:"none", zIndex:500 });
+    Object.assign(rulerRight.style,{ position:"absolute", right:"0", top:"0", width:RIGHT_RULER_W+"px", height:"100%", pointerEvents:"none", zIndex:500 });
+    el.map.appendChild(rulerTop);
+    el.map.appendChild(rulerRight);
+    el.map.style.setProperty("--ruler-right-w", RIGHT_RULER_W + "px");
 
-    // --- Reglas (bordes) ---
-    const mapEl = document.getElementById('map');
-    const rulerTop = document.createElement('canvas');
-    const rulerLeft = document.createElement('canvas');
-    Object.assign(rulerTop.style, {
-      position: 'absolute', left: '0', top: '0', height: '28px', width: '100%',
-      pointerEvents: 'none', zIndex: 500
-    });
-    Object.assign(rulerLeft.style, {
-      position: 'absolute', left: '0', top: '0', width: '48px', height: '100%',
-      pointerEvents: 'none', zIndex: 500
-    });
+    function drawRulers(){
+      const rect = el.map.getBoundingClientRect();
 
-    // contenedor relativo
-    mapEl.style.position = 'relative';
-    mapEl.appendChild(rulerTop);
-    mapEl.appendChild(rulerLeft);
+      // Top ruler
+      rulerTop.width = Math.max(1, Math.floor(rect.width));
+      rulerTop.height = TOP_RULER_H;
+      const ctxT = rulerTop.getContext("2d");
+      ctxT.clearRect(0,0,rulerTop.width,rulerTop.height);
+      ctxT.fillStyle = "rgba(255,255,255,0.9)";
+      ctxT.fillRect(0,0,rulerTop.width,rulerTop.height);
+      ctxT.strokeStyle = "#333"; ctxT.fillStyle = "#333"; ctxT.lineWidth = 1;
+      ctxT.beginPath(); ctxT.moveTo(0, TOP_RULER_H - 0.5); ctxT.lineTo(rulerTop.width, TOP_RULER_H - 0.5); ctxT.stroke();
 
-    function drawRulers() {
-      const rect = mapEl.getBoundingClientRect();
-      // Top
-      rulerTop.width = rect.width; rulerTop.height = 28;
-      const ctxT = rulerTop.getContext('2d');
-      ctxT.clearRect(0, 0, rulerTop.width, rulerTop.height);
-      ctxT.fillStyle = 'rgba(255,255,255,0.9)';
-      ctxT.fillRect(0, 0, rulerTop.width, rulerTop.height);
-      ctxT.strokeStyle = '#333'; ctxT.fillStyle = '#333';
-      ctxT.lineWidth = 1;
-      ctxT.beginPath();
-      ctxT.moveTo(0, 27.5); ctxT.lineTo(rulerTop.width, 27.5); ctxT.stroke();
+      // Right ruler
+      rulerRight.width  = RIGHT_RULER_W;
+      rulerRight.height = Math.max(1, Math.floor(rect.height));
+      const ctxR = rulerRight.getContext("2d");
+      ctxR.clearRect(0,0,rulerRight.width,rulerRight.height);
+      ctxR.fillStyle = "rgba(255,255,255,0.9)";
+      ctxR.fillRect(0,0,rulerRight.width,rulerRight.height);
+      ctxR.strokeStyle = "#333"; ctxR.fillStyle = "#333"; ctxR.lineWidth = 1;
+      ctxR.beginPath(); ctxR.moveTo(rulerRight.width - 0.5, 0); ctxR.lineTo(rulerRight.width - 0.5, rulerRight.height); ctxR.stroke();
 
-      // Left
-      rulerLeft.width = 48; rulerLeft.height = rect.height;
-      const ctxL = rulerLeft.getContext('2d');
-      ctxL.clearRect(0, 0, rulerLeft.width, rulerLeft.height);
-      ctxL.fillStyle = 'rgba(255,255,255,0.9)';
-      ctxL.fillRect(0, 0, rulerLeft.width, rulerLeft.height);
-      ctxL.strokeStyle = '#333'; ctxL.fillStyle = '#333';
-      ctxL.lineWidth = 1;
-      ctxL.beginPath();
-      ctxL.moveTo(47.5, 0); ctxL.lineTo(47.5, rulerLeft.height); ctxL.stroke();
+      const sample = 200; // px sample distance for unit computation
+      const a = map.containerPointToLatLng([0,0]);
+      const b = map.containerPointToLatLng([sample,0]);
+      const c = map.containerPointToLatLng([0,sample]);
+      const unitPerPxX = Math.abs(b.lng - a.lng) / sample;
+      const unitPerPxY = Math.abs(c.lat - a.lat) / sample;
 
-      // escala: convertir 1 px de pantalla -> unidades imagen
-      const pxSpan = 200;
-      const llx1 = map.containerPointToLatLng([0, 0]);
-      const llx2 = map.containerPointToLatLng([pxSpan, 0]);
-      const lly1 = map.containerPointToLatLng([0, 0]);
-      const lly2 = map.containerPointToLatLng([0, pxSpan]);
-      const unitsPerScreenPxX = Math.abs(llx2.lng - llx1.lng) / pxSpan;
-      const unitsPerScreenPxY = Math.abs(lly2.lat - lly1.lat) / pxSpan;
-
-      const metersPerScreenPxX = (metersPerPixelX != null) ? unitsPerScreenPxX * metersPerPixelX : null;
-      const metersPerScreenPxY = (metersPerPixelY != null ? metersPerPixelY : metersPerPixelX) != null
-        ? unitsPerScreenPxY * (metersPerPixelY != null ? metersPerPixelY : metersPerPixelX)
-        : null;
+      const mX = (mppX != null) ? unitPerPxX * mppX : null;
+      const _mppY = (mppY != null) ? mppY : mppX;
+      const mY = (_mppY != null) ? unitPerPxY * _mppY : null;
 
       // Top ticks
-      const desiredLabelPx = 140;
-      const spanUnitsX = unitsPerScreenPxX * desiredLabelPx;
-      const spanMetersX = (metersPerScreenPxX != null) ? metersPerScreenPxX * desiredLabelPx : null;
-      let stepUnitsX, stepLabelX;
-      if (spanMetersX != null) {
-        const niceM = niceStep(spanMetersX);
-        stepUnitsX = niceM / (metersPerPixelX || 1);
-        stepLabelX = (v) => formatMeters(v * (metersPerPixelX || 1));
+      const wantX = 140;
+      const spanUnitsX = unitPerPxX * wantX;
+      const spanMetersX = (mX != null) ? mX * wantX : null;
+      let stepUX, labelXFn;
+      if(spanMetersX != null){
+        const s = niceStep(spanMetersX);
+        stepUX = s / (mppX || 1);
+        labelXFn = (units) => fmtLinear(units * (mppX || 1));
       } else {
-        const niceU = niceStep(spanUnitsX);
-        stepUnitsX = niceU;
-        stepLabelX = (v) => formatPixels(v);
+        const s = niceStep(spanUnitsX);
+        stepUX = s;
+        labelXFn = (units) => fmtPixels(units);
+      }
+      const x0 = a.lng;
+      const firstX = Math.ceil(x0 / stepUX) * stepUX;
+      ctxT.font = "11px system-ui"; ctxT.textAlign = "center"; ctxT.textBaseline = "top";
+      for(let u = firstX;; u += stepUX){
+        const sx = (u - x0) / unitPerPxX;
+        if(sx > rulerTop.width) break;
+        if(sx < 0) { if(u > x0) break; else continue; }
+        ctxT.beginPath(); ctxT.moveTo(Math.round(sx)+0.5, TOP_RULER_H - 12); ctxT.lineTo(Math.round(sx)+0.5, TOP_RULER_H); ctxT.stroke();
+        ctxT.fillText(labelXFn(stepUX), Math.round(sx), 2);
       }
 
-      // origen en imagen para x=0 pantalla
-      const originXImg = llx1.lng;
-      const firstTickUnitsX = Math.ceil(originXImg / stepUnitsX) * stepUnitsX;
-      for (let u = firstTickUnitsX; ; u += stepUnitsX) {
-        const screenX = (u - originXImg) / unitsPerScreenPxX;
-        if (screenX > rulerTop.width) break;
-        if (screenX < 0) continue;
-        const label = stepLabelX(stepUnitsX);
-        // marca
-        ctxT.beginPath();
-        ctxT.moveTo(screenX + 0.5, 16);
-        ctxT.lineTo(screenX + 0.5, 28);
-        ctxT.stroke();
-        // texto
-        ctxT.font = '11px system-ui';
-        ctxT.textAlign = 'center';
-        ctxT.textBaseline = 'top';
-        ctxT.fillText(label, screenX, 2);
-      }
-
-      // Left ticks
-      const desiredLabelPy = 90;
-      const spanUnitsY = unitsPerScreenPxY * desiredLabelPy;
-      const spanMetersY = (metersPerScreenPxY != null) ? metersPerScreenPxY * desiredLabelPy : null;
-      let stepUnitsY, stepLabelY;
-      const _mppY = (metersPerPixelY != null ? metersPerPixelY : metersPerPixelX);
-      if (spanMetersY != null) {
-        const niceM = niceStep(spanMetersY);
-        stepUnitsY = niceM / (_mppY || 1);
-        stepLabelY = (v) => formatMeters(v * (_mppY || 1));
+      // Right ticks
+      const wantY = 90;
+      const spanUnitsY = unitPerPxY * wantY;
+      const spanMetersY = (mY != null) ? mY * wantY : null;
+      let stepUY, labelYFn;
+      if(spanMetersY != null){
+        const s = niceStep(spanMetersY);
+        stepUY = s / (_mppY || 1);
+        labelYFn = (units) => fmtLinear(units * (_mppY || 1));
       } else {
-        const niceU = niceStep(spanUnitsY);
-        stepUnitsY = niceU;
-        stepLabelY = (v) => formatPixels(v);
+        const s = niceStep(spanUnitsY);
+        stepUY = s;
+        labelYFn = (units) => fmtPixels(units);
       }
-
-      const originYImg = lly1.lat;
-      const firstTickUnitsY = Math.ceil(originYImg / stepUnitsY) * stepUnitsY;
-      for (let u = firstTickUnitsY; ; u += stepUnitsY) {
-        const screenY = (u - originYImg) / unitsPerScreenPxY;
-        if (screenY > rulerLeft.height) break;
-        if (screenY < 0) continue;
-        const label = stepLabelY(stepUnitsY);
-        // marca
-        ctxL.beginPath();
-        ctxL.moveTo(36, screenY + 0.5);
-        ctxL.lineTo(48, screenY + 0.5);
-        ctxL.stroke();
-        // texto
-        ctxL.font = '11px system-ui';
-        ctxL.textAlign = 'right';
-        ctxL.textBaseline = 'middle';
-        ctxL.fillText(label, 32, screenY);
+      const y0 = a.lat;
+      const firstY = Math.ceil(y0 / stepUY) * stepUY;
+      ctxR.font = "11px system-ui"; ctxR.textAlign = "right"; ctxR.textBaseline = "middle";
+      const textPad = 8; // left padding for text inside RIGHT_RULER_W
+      for(let u = firstY;; u += stepUY){
+        const sy = (u - y0) / unitPerPxY;
+        if(sy > rulerRight.height) break;
+        if(sy < 0) { if(u > y0) break; else continue; }
+        ctxR.beginPath(); ctxR.moveTo(RIGHT_RULER_W - 12, Math.round(sy)+0.5);
+        ctxR.lineTo(RIGHT_RULER_W, Math.round(sy)+0.5); ctxR.stroke();
+        ctxR.fillText(labelYFn(stepUY), RIGHT_RULER_W - textPad, Math.round(sy));
       }
     }
-
-    function scheduleRulersRedraw() { requestAnimationFrame(drawRulers); }
-    map.on('zoom move resize', scheduleRulersRedraw);
-    window.addEventListener('resize', scheduleRulersRedraw);
+    function scheduleRulersRedraw(){ requestAnimationFrame(drawRulers); }
+    map.on("zoom move resize", scheduleRulersRedraw);
+    window.addEventListener("resize", scheduleRulersRedraw);
     setTimeout(scheduleRulersRedraw, 0);
 
-    function fitImage() {
-      if (!overlay || !bounds) return;
+    /* ---------- View helpers ---------- */
+    function fitImage(){
+      if(!overlay || !imgBounds) return;
       map.invalidateSize();
       const size = map.getSize();
-      const scale = Math.min(size.x / imgWidth, size.y / imgHeight);
+      const scale = Math.min(size.x / imageWidth, size.y / imageHeight);
       const minZoom = Math.min(0, Math.floor(Math.log2(scale)));
       map.setMinZoom(minZoom);
-      map.fitBounds(bounds);
+      map.fitBounds(imgBounds);
       scheduleRulersRedraw();
     }
+    function updateAreaForLayer(layer){
+      const rings = layer.getLatLngs();
+      const latlngs = Array.isArray(rings[0]) ? rings[0] : rings;
+      if(!latlngs || latlngs.length < 3){ el.areaBox.textContent = "—"; return; }
+      const px2 = polygonAreaPx2(latlngs);
+      el.areaBox.textContent = "Área: " + fmtAreaPx2(px2);
+    }
 
-    async function uploadFile(file) {
-      const fd = new FormData();
-      fd.append("file", file);
-      const res = await fetch("/api/agrovista/upload", { method: "POST", body: fd });
-      if (!res.ok) {
+    /* ---------- Upload ---------- */
+    async function uploadFile(file){
+      const fd = new FormData(); fd.append("file", file);
+      const res = await fetch(ENDPOINTS.upload, { method:"POST", body: fd });
+      if(!res.ok){
         let msg = "Upload error";
-        try { msg = await res.text(); } catch {}
+        try{ msg = await res.text(); } catch {}
         throw new Error(msg);
       }
       return res.json();
     }
-
-    document.getElementById("uploader").addEventListener("change", async (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-      try {
-        statusEl.textContent = "Procesando...";
+    function applyMeta(meta){
+      imageId = meta.id;
+      imageWidth  = meta.width;
+      imageHeight = meta.height;
+      mppX = (typeof meta.mppX === "number" && isFinite(meta.mppX)) ? meta.mppX : null;
+      mppY = (typeof meta.mppY === "number" && isFinite(meta.mppY)) ? meta.mppY : null;
+      imgBounds = [[0,0], [imageHeight, imageWidth]];
+    }
+    async function handleFileChange(ev){
+      const file = ev.target.files?.[0];
+      if(!file) return;
+      try{
+        setStatus("Procesando...");
         const meta = await uploadFile(file);
-        imgId = meta.id;
-        imgWidth = meta.width;
-        imgHeight = meta.height;
-
-        metersPerPixelX = (typeof meta.mppX === 'number' && isFinite(meta.mppX)) ? meta.mppX : null;
-        metersPerPixelY = (typeof meta.mppY === 'number' && isFinite(meta.mppY)) ? meta.mppY : null;
-
-        bounds = [[0, 0], [imgHeight, imgWidth]];
-        if (overlay) map.removeLayer(overlay);
-        overlay = L.imageOverlay(`/api/agrovista/image/${imgId}.png`, bounds).addTo(map);
+        applyMeta(meta);
+        if(overlay) map.removeLayer(overlay);
+        overlay = L.imageOverlay(ENDPOINTS.image(imageId), imgBounds).addTo(map);
         fitImage();
-        statusEl.textContent = metersPerPixelX != null
-          ? `Escala automática: ~${metersPerPixelX} m/px`
-          : "Escala en píxeles (mpp no disponible)";
-      } catch {
-        statusEl.textContent = "Error al procesar el archivo";
+        setStatus(mppX != null ? `Escala automática: ~${mppX} m/px` : "Escala en píxeles (mpp no disponible)");
+        drawnItems.eachLayer(layer => { if(layer instanceof L.Polygon || layer instanceof L.Rectangle){ updateAreaForLayer(layer); } });
+      }catch(e){
+        setStatus("Error al procesar el archivo");
       }
-    });
+    }
 
-    map.on(L.Draw.Event.CREATED, async (e) => {
+    /* ---------- Draw events ---------- */
+    async function fetchProtein(verts){
+      const res = await fetch(ENDPOINTS.protein, {
+        method:"POST",
+        headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify({ id:imageId, vertices: verts })
+      });
+      let data = {};
+      try{ data = await res.json(); }catch{}
+      if(!res.ok){ throw new Error(data?.description || "Área inválida"); }
+      return data;
+    }
+    function wireArea(layer){ layer.on("click", () => updateAreaForLayer(layer)); }
+
+    map.on(L.Draw.Event.CREATED, async (e)=>{
       const { layer, layerType } = e;
       drawnItems.addLayer(layer);
-      if (layerType === 'polygon' || layerType === 'rectangle') {
-        try {
-          const latlngs = layer.getLatLngs()[0];
-          const verts = latlngs.map(ll => [ll.lng, ll.lat]);
-          const res = await fetch("/api/agrovista/protein", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id: imgId, vertices: verts })
-          });
-          let data = {};
-          try { data = await res.json(); } catch {}
-          if (!res.ok) {
-            proteinBox.textContent = data.description || "Área inválida";
-            return;
+
+      if(layerType === "polygon" || layerType === "rectangle"){
+        wireArea(layer);
+        updateAreaForLayer(layer);
+
+        if(imageId){
+          try{
+            const latlngs = layer.getLatLngs()[0];
+            const verts = latlngs.map(ll => [ll.lng, ll.lat]);
+            const data = await fetchProtein(verts);
+            el.protein.textContent = `Promedio de proteína: ${data.protein}%`;
+          }catch(err){
+            el.protein.textContent = err?.message || "Error al calcular la proteína";
           }
-          proteinBox.textContent = `Promedio de proteína: ${data.protein}%`;
-        } catch {
-          proteinBox.textContent = "Error al calcular la proteína";
         }
       }
     });
 
-    document.getElementById('fit-bounds').addEventListener('click', fitImage);
-
-    enterFsBtn.addEventListener('click', () => {
-      workzoneEl.requestFullscreen().catch(() => {});
-      setTimeout(() => { map.invalidateSize(); scheduleRulersRedraw(); }, 80);
+    map.on(L.Draw.Event.EDITED, (e)=>{
+      e.layers.eachLayer(layer => {
+        if(layer instanceof L.Polygon || layer instanceof L.Rectangle){
+          updateAreaForLayer(layer);
+        }
+      });
     });
-    exitFsBtn.addEventListener('click', () => { document.exitFullscreen(); });
-
-    document.addEventListener('fullscreenchange', () => {
-      const isFs = document.fullscreenElement === workzoneEl;
-      enterFsBtn.classList.toggle('hidden', isFs);
-      exitFsBtn.classList.toggle('hidden', !isFs);
-      setTimeout(() => { map.invalidateSize(); scheduleRulersRedraw(); }, 80);
+    map.on(L.Draw.Event.DELETED, ()=>{
+      el.areaBox.textContent = "Selecciona un polígono";
     });
 
-    window.addEventListener('resize', () => { map.invalidateSize(); scheduleRulersRedraw(); });
+    /* ---------- Fullscreen ---------- */
+    function enterFullscreen(){
+      el.workzone.requestFullscreen().catch(()=>{});
+      setTimeout(() => { map.invalidateSize(); scheduleRulersRedraw(); }, 80);
+    }
+    function exitFullscreen(){ document.exitFullscreen(); }
+    function onFsChange(){
+      const isFs = document.fullscreenElement === el.workzone;
+      el.btnFsIn.classList.toggle("hidden", isFs);
+      el.btnFsOut.classList.toggle("hidden", !isFs);
+      setTimeout(() => { map.invalidateSize(); scheduleRulersRedraw(); }, 80);
+    }
+
+    /* ---------- Wire UI Events ---------- */
+    el.uploader.addEventListener("change", handleFileChange);
+    el.btnFit.addEventListener("click", fitImage);
+    el.btnFsIn.addEventListener("click", enterFullscreen);
+    el.btnFsOut.addEventListener("click", exitFullscreen);
+    document.addEventListener("fullscreenchange", onFsChange);
+    window.addEventListener("resize", () => { map.invalidateSize(); scheduleRulersRedraw(); });
+  })();
   </script>
-{% endblock%}
+{% endblock %}
