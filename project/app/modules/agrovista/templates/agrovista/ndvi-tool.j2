@@ -20,7 +20,7 @@
 {% endblock %}
 
 {% block content %}
-<div id="workzone">
+<div id="workzone" class="bg-white p-5">
   <div class="mb-2 flex gap-2">
     <button id="enter-fullscreen" class="{{ base_button_classes }}">Pantalla completa</button>
     <button id="exit-fullscreen" class="{{ base_button_classes }} hidden">Salir pantalla completa</button>
@@ -32,6 +32,7 @@
   </div>
 
   <strong id="status">Sube un GeoTIFF con NIR</strong>
+  <div id="protein-box" class="mt-2 p-2 border"> Promedio de proteína: --% </div>
   <div id="map"></div>
 </div>
 {% endblock %}
@@ -44,20 +45,253 @@
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
   <script>
     let imgId = null, imgWidth = 0, imgHeight = 0;
-    const map = L.map('map', { crs: L.CRS.Simple }).setView([0,0], 0);
+    let metersPerPixelX = null, metersPerPixelY = null;
+    let overlay = null, bounds = null;
+
+    const map = L.map('map', { crs: L.CRS.Simple }).setView([0, 0], 0);
     const drawnItems = new L.FeatureGroup();
     map.addLayer(drawnItems);
+
     const drawCtl = new L.Control.Draw({
-      draw: { polygon: true, rectangle: true, polyline: false, circle: false, marker: false },
+      draw: {
+        polygon: true,
+        rectangle: true,
+        polyline: false,
+        circle: false,
+        marker: false,
+        circlemarker: false
+      },
       edit: { featureGroup: drawnItems }
     });
     map.addControl(drawCtl);
-    let overlay = null, bounds = null;
+
+    const workzoneEl = document.getElementById('workzone');
+    const enterFsBtn = document.getElementById('enter-fullscreen');
+    const exitFsBtn = document.getElementById('exit-fullscreen');
+    const proteinBox = document.getElementById('protein-box');
+    const statusEl = document.getElementById('status');
+
+    function niceStep(length) {
+      const steps = [1, 2, 5];
+      const p = Math.pow(10, Math.floor(Math.log10(length || 1)));
+      let best = p;
+      for (let s of steps) {
+        const c = s * p;
+        if (c <= length) best = c;
+        if (c >= length * 0.6) return c;
+      }
+      return best;
+    }
+    function formatMeters(m) {
+      if (m >= 1000) return (m / 1000).toFixed(m % 1000 === 0 ? 0 : 1) + ' km';
+      if (m >= 1) return Math.round(m) + ' m';
+      return (m * 100).toFixed(0) + ' cm';
+    }
+    function formatPixels(px) { return Math.round(px) + ' px'; }
+
+    function addSimpleScaleControl(map, getMppXOrNull) {
+      const ScaleCtl = L.Control.extend({
+        options: { position: 'bottomleft' },
+        onAdd: function () {
+          const div = L.DomUtil.create('div', 'leaflet-control scale-simple');
+          Object.assign(div.style, {
+            background: 'rgba(255,255,255,0.9)', padding: '6px 8px',
+            border: '1px solid #ddd', borderRadius: '6px',
+            font: '12px/1.2 system-ui, sans-serif', userSelect: 'none'
+          });
+          this._label = document.createElement('div');
+          this._label.style.textAlign = 'center';
+          this._bar = document.createElement('div');
+          Object.assign(this._bar.style, { height: '6px', marginTop: '4px', background: '#333', width: '100px' });
+          div.appendChild(this._label);
+          div.appendChild(this._bar);
+          map.on('zoom move resize', this._update, this);
+          this._container = div;
+          this._update();
+          return div;
+        },
+        onRemove: function () { map.off('zoom move resize', this._update, this); },
+        _update: function () {
+          if (!this._container) return;
+          const mppX = getMppXOrNull();
+          const targetScreenPx = 150;
+
+          const ll1 = map.containerPointToLatLng([0, 0]);
+          const ll2 = map.containerPointToLatLng([targetScreenPx, 0]);
+          const imgUnits = Math.abs(ll2.lng - ll1.lng);
+          const totalMeters = (mppX != null) ? imgUnits * mppX : null;
+
+          let labelValue, pxLen;
+          if (totalMeters != null) {
+            const niceM = niceStep(totalMeters);
+            labelValue = formatMeters(niceM);
+            pxLen = targetScreenPx * (niceM / totalMeters);
+          } else {
+            const niceU = niceStep(imgUnits);
+            labelValue = formatPixels(niceU);
+            pxLen = targetScreenPx * (niceU / imgUnits);
+          }
+          this._label.textContent = labelValue;
+          this._bar.style.width = Math.max(30, Math.min(220, pxLen)) + 'px';
+        }
+      });
+      map.addControl(new ScaleCtl());
+    }
+
+    addSimpleScaleControl(map, () => metersPerPixelX);
+
+    // --- Reglas (bordes) ---
+    const mapEl = document.getElementById('map');
+    const rulerTop = document.createElement('canvas');
+    const rulerLeft = document.createElement('canvas');
+    Object.assign(rulerTop.style, {
+      position: 'absolute', left: '0', top: '0', height: '28px', width: '100%',
+      pointerEvents: 'none', zIndex: 500
+    });
+    Object.assign(rulerLeft.style, {
+      position: 'absolute', left: '0', top: '0', width: '48px', height: '100%',
+      pointerEvents: 'none', zIndex: 500
+    });
+
+    // contenedor relativo
+    mapEl.style.position = 'relative';
+    mapEl.appendChild(rulerTop);
+    mapEl.appendChild(rulerLeft);
+
+    function drawRulers() {
+      const rect = mapEl.getBoundingClientRect();
+      // Top
+      rulerTop.width = rect.width; rulerTop.height = 28;
+      const ctxT = rulerTop.getContext('2d');
+      ctxT.clearRect(0, 0, rulerTop.width, rulerTop.height);
+      ctxT.fillStyle = 'rgba(255,255,255,0.9)';
+      ctxT.fillRect(0, 0, rulerTop.width, rulerTop.height);
+      ctxT.strokeStyle = '#333'; ctxT.fillStyle = '#333';
+      ctxT.lineWidth = 1;
+      ctxT.beginPath();
+      ctxT.moveTo(0, 27.5); ctxT.lineTo(rulerTop.width, 27.5); ctxT.stroke();
+
+      // Left
+      rulerLeft.width = 48; rulerLeft.height = rect.height;
+      const ctxL = rulerLeft.getContext('2d');
+      ctxL.clearRect(0, 0, rulerLeft.width, rulerLeft.height);
+      ctxL.fillStyle = 'rgba(255,255,255,0.9)';
+      ctxL.fillRect(0, 0, rulerLeft.width, rulerLeft.height);
+      ctxL.strokeStyle = '#333'; ctxL.fillStyle = '#333';
+      ctxL.lineWidth = 1;
+      ctxL.beginPath();
+      ctxL.moveTo(47.5, 0); ctxL.lineTo(47.5, rulerLeft.height); ctxL.stroke();
+
+      // escala: convertir 1 px de pantalla -> unidades imagen
+      const pxSpan = 200;
+      const llx1 = map.containerPointToLatLng([0, 0]);
+      const llx2 = map.containerPointToLatLng([pxSpan, 0]);
+      const lly1 = map.containerPointToLatLng([0, 0]);
+      const lly2 = map.containerPointToLatLng([0, pxSpan]);
+      const unitsPerScreenPxX = Math.abs(llx2.lng - llx1.lng) / pxSpan;
+      const unitsPerScreenPxY = Math.abs(lly2.lat - lly1.lat) / pxSpan;
+
+      const metersPerScreenPxX = (metersPerPixelX != null) ? unitsPerScreenPxX * metersPerPixelX : null;
+      const metersPerScreenPxY = (metersPerPixelY != null ? metersPerPixelY : metersPerPixelX) != null
+        ? unitsPerScreenPxY * (metersPerPixelY != null ? metersPerPixelY : metersPerPixelX)
+        : null;
+
+      // Top ticks
+      const desiredLabelPx = 140;
+      const spanUnitsX = unitsPerScreenPxX * desiredLabelPx;
+      const spanMetersX = (metersPerScreenPxX != null) ? metersPerScreenPxX * desiredLabelPx : null;
+      let stepUnitsX, stepLabelX;
+      if (spanMetersX != null) {
+        const niceM = niceStep(spanMetersX);
+        stepUnitsX = niceM / (metersPerPixelX || 1);
+        stepLabelX = (v) => formatMeters(v * (metersPerPixelX || 1));
+      } else {
+        const niceU = niceStep(spanUnitsX);
+        stepUnitsX = niceU;
+        stepLabelX = (v) => formatPixels(v);
+      }
+
+      // origen en imagen para x=0 pantalla
+      const originXImg = llx1.lng;
+      const firstTickUnitsX = Math.ceil(originXImg / stepUnitsX) * stepUnitsX;
+      for (let u = firstTickUnitsX; ; u += stepUnitsX) {
+        const screenX = (u - originXImg) / unitsPerScreenPxX;
+        if (screenX > rulerTop.width) break;
+        if (screenX < 0) continue;
+        const label = stepLabelX(stepUnitsX);
+        // marca
+        ctxT.beginPath();
+        ctxT.moveTo(screenX + 0.5, 16);
+        ctxT.lineTo(screenX + 0.5, 28);
+        ctxT.stroke();
+        // texto
+        ctxT.font = '11px system-ui';
+        ctxT.textAlign = 'center';
+        ctxT.textBaseline = 'top';
+        ctxT.fillText(label, screenX, 2);
+      }
+
+      // Left ticks
+      const desiredLabelPy = 90;
+      const spanUnitsY = unitsPerScreenPxY * desiredLabelPy;
+      const spanMetersY = (metersPerScreenPxY != null) ? metersPerScreenPxY * desiredLabelPy : null;
+      let stepUnitsY, stepLabelY;
+      const _mppY = (metersPerPixelY != null ? metersPerPixelY : metersPerPixelX);
+      if (spanMetersY != null) {
+        const niceM = niceStep(spanMetersY);
+        stepUnitsY = niceM / (_mppY || 1);
+        stepLabelY = (v) => formatMeters(v * (_mppY || 1));
+      } else {
+        const niceU = niceStep(spanUnitsY);
+        stepUnitsY = niceU;
+        stepLabelY = (v) => formatPixels(v);
+      }
+
+      const originYImg = lly1.lat;
+      const firstTickUnitsY = Math.ceil(originYImg / stepUnitsY) * stepUnitsY;
+      for (let u = firstTickUnitsY; ; u += stepUnitsY) {
+        const screenY = (u - originYImg) / unitsPerScreenPxY;
+        if (screenY > rulerLeft.height) break;
+        if (screenY < 0) continue;
+        const label = stepLabelY(stepUnitsY);
+        // marca
+        ctxL.beginPath();
+        ctxL.moveTo(36, screenY + 0.5);
+        ctxL.lineTo(48, screenY + 0.5);
+        ctxL.stroke();
+        // texto
+        ctxL.font = '11px system-ui';
+        ctxL.textAlign = 'right';
+        ctxL.textBaseline = 'middle';
+        ctxL.fillText(label, 32, screenY);
+      }
+    }
+
+    function scheduleRulersRedraw() { requestAnimationFrame(drawRulers); }
+    map.on('zoom move resize', scheduleRulersRedraw);
+    window.addEventListener('resize', scheduleRulersRedraw);
+    setTimeout(scheduleRulersRedraw, 0);
+
+    function fitImage() {
+      if (!overlay || !bounds) return;
+      map.invalidateSize();
+      const size = map.getSize();
+      const scale = Math.min(size.x / imgWidth, size.y / imgHeight);
+      const minZoom = Math.min(0, Math.floor(Math.log2(scale)));
+      map.setMinZoom(minZoom);
+      map.fitBounds(bounds);
+      scheduleRulersRedraw();
+    }
 
     async function uploadFile(file) {
-      const fd = new FormData(); fd.append("file", file);
+      const fd = new FormData();
+      fd.append("file", file);
       const res = await fetch("/api/agrovista/upload", { method: "POST", body: fd });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        let msg = "Upload error";
+        try { msg = await res.text(); } catch {}
+        throw new Error(msg);
+      }
       return res.json();
     }
 
@@ -65,62 +299,67 @@
       const file = e.target.files[0];
       if (!file) return;
       try {
-        document.getElementById("status").textContent = "Procesando...";
+        statusEl.textContent = "Procesando...";
         const meta = await uploadFile(file);
-        imgId = meta.id; imgWidth = meta.width; imgHeight = meta.height;
-        bounds = [[0,0],[imgHeight,imgWidth]];
+        imgId = meta.id;
+        imgWidth = meta.width;
+        imgHeight = meta.height;
+
+        metersPerPixelX = (typeof meta.mppX === 'number' && isFinite(meta.mppX)) ? meta.mppX : null;
+        metersPerPixelY = (typeof meta.mppY === 'number' && isFinite(meta.mppY)) ? meta.mppY : null;
+
+        bounds = [[0, 0], [imgHeight, imgWidth]];
         if (overlay) map.removeLayer(overlay);
         overlay = L.imageOverlay(`/api/agrovista/image/${imgId}.png`, bounds).addTo(map);
         fitImage();
-        document.getElementById("status").textContent = "Dibuja un polígono o rectángulo sobre el mapa";
-      } catch (err) {
-        document.getElementById("status").textContent = "Error al procesar el archivo";
+        statusEl.textContent = metersPerPixelX != null
+          ? `Escala automática: ~${metersPerPixelX} m/px`
+          : "Escala en píxeles (mpp no disponible)";
+      } catch {
+        statusEl.textContent = "Error al procesar el archivo";
       }
     });
 
-    map.on(L.Draw.Event.CREATED, async ({ layer }) => {
+    map.on(L.Draw.Event.CREATED, async (e) => {
+      const { layer, layerType } = e;
       drawnItems.addLayer(layer);
-      const latlngs = layer.getLatLngs()[0];
-      const verts = latlngs.map(ll => [ll.lng, ll.lat]);
-      const res = await fetch("/api/agrovista/protein", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ id: imgId, vertices: verts })
-      });
-      const data = await res.json();
-      if (!res.ok) { alert(data.description || "Área inválida"); return; }
-      alert(`Promedio de proteína: ${data.protein}%`);
+      if (layerType === 'polygon' || layerType === 'rectangle') {
+        try {
+          const latlngs = layer.getLatLngs()[0];
+          const verts = latlngs.map(ll => [ll.lng, ll.lat]);
+          const res = await fetch("/api/agrovista/protein", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: imgId, vertices: verts })
+          });
+          let data = {};
+          try { data = await res.json(); } catch {}
+          if (!res.ok) {
+            proteinBox.textContent = data.description || "Área inválida";
+            return;
+          }
+          proteinBox.textContent = `Promedio de proteína: ${data.protein}%`;
+        } catch {
+          proteinBox.textContent = "Error al calcular la proteína";
+        }
+      }
     });
-
-    const workzoneEl = document.getElementById('workzone');
-    const enterFsBtn = document.getElementById('enter-fullscreen');
-    const exitFsBtn = document.getElementById('exit-fullscreen');
-
-    function fitImage() {
-      if (!overlay) return;
-      map.invalidateSize();
-      const size = map.getSize();
-      const scale = Math.min(size.x / imgWidth, size.y / imgHeight);
-      const minZoom = Math.min(0, Math.floor(Math.log2(scale)));
-      map.setMinZoom(minZoom);
-      map.fitBounds(bounds);
-    }
 
     document.getElementById('fit-bounds').addEventListener('click', fitImage);
 
-
     enterFsBtn.addEventListener('click', () => {
-      workzoneEl.requestFullscreen();
+      workzoneEl.requestFullscreen().catch(() => {});
+      setTimeout(() => { map.invalidateSize(); scheduleRulersRedraw(); }, 80);
     });
-
-    exitFsBtn.addEventListener('click', () => {
-      document.exitFullscreen();
-    });
+    exitFsBtn.addEventListener('click', () => { document.exitFullscreen(); });
 
     document.addEventListener('fullscreenchange', () => {
       const isFs = document.fullscreenElement === workzoneEl;
       enterFsBtn.classList.toggle('hidden', isFs);
       exitFsBtn.classList.toggle('hidden', !isFs);
+      setTimeout(() => { map.invalidateSize(); scheduleRulersRedraw(); }, 80);
     });
+
+    window.addEventListener('resize', () => { map.invalidateSize(); scheduleRulersRedraw(); });
   </script>
 {% endblock%}
