@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Type
 import cv2
 import numpy as np
 import rasterio
+import tempfile
 
 
 class ProcessorError(Exception):
@@ -112,29 +113,63 @@ class OrthoPhotoProcessor:
     # ------------------------------------------------------------------
     # Loading and computing
     def _load_bands(self) -> None:
-        """Load RGB (and optionally NIR) bands from ``image_path``."""
+        """Compute indices using block-by-block processing to limit RAM usage."""
+        calculators = {
+            name: VegetationIndexFactory.get_calculator(name)
+            for name in VegetationIndexFactory.get_available_indices()
+        }
+
         try:
             with rasterio.open(self.image_path) as src:
-                self.bands["r"] = src.read(1).astype(np.float64)
-                self.bands["g"] = src.read(2).astype(np.float64)
-                self.bands["b"] = src.read(3).astype(np.float64)
-                if src.count >= 4:
-                    self.bands["nir"] = src.read(4).astype(np.float64)
+                shape = (src.height, src.width)
+                # Prepare memmap files for each index
+                memmaps: Dict[str, np.memmap] = {}
+                for name in calculators:
+                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f"_{name}.idx")
+                    memmaps[name] = np.memmap(tmp.name, dtype=np.float64, mode="w+", shape=shape)
+
+                for _, window in src.block_windows(1):
+                    bands = {
+                        "r": src.read(1, window=window).astype(np.float64),
+                        "g": src.read(2, window=window).astype(np.float64),
+                        "b": src.read(3, window=window).astype(np.float64),
+                    }
+                    if src.count >= 4:
+                        bands["nir"] = src.read(4, window=window).astype(np.float64)
+
+                    r0, c0 = window.row_off, window.col_off
+                    sl = (slice(r0, r0 + window.height), slice(c0, c0 + window.width))
+                    for name, calc in calculators.items():
+                        if calc and (not calc.REQUIRES_NIR or "nir" in bands):
+                            try:
+                                memmaps[name][sl] = calc.compute(bands)
+                            except Exception:
+                                continue
+
+                for mm in memmaps.values():
+                    mm.flush()
+                self.calculated_indices = memmaps
         except Exception:
             image = cv2.imread(self.image_path, cv2.IMREAD_COLOR)
             if image is None:
                 raise ProcessorError("unable to load image")
             b, g, r = cv2.split(image.astype(np.float64))
-            self.bands.update({"b": b, "g": g, "r": r})
-
-    def _compute_indices(self) -> None:
-        for name in VegetationIndexFactory.get_available_indices():
-            calc = VegetationIndexFactory.get_calculator(name)
-            if calc and (not calc.REQUIRES_NIR or "nir" in self.bands):
+            bands = {"b": b, "g": g, "r": r}
+            calculators = {name: calc for name, calc in calculators.items() if calc}
+            for name, calc in calculators.items():
                 try:
-                    self.calculated_indices[name] = calc.compute(self.bands)
+                    data = calc.compute(bands)
+                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f"_{name}.idx")
+                    mm = np.memmap(tmp.name, dtype=np.float64, mode="w+", shape=data.shape)
+                    mm[:] = data
+                    mm.flush()
+                    self.calculated_indices[name] = mm
                 except Exception:
                     continue
+
+    def _compute_indices(self) -> None:
+        """Indices are computed during ``_load_bands``."""
+        return
 
     # ------------------------------------------------------------------
     # Utility methods

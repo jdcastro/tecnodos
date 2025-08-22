@@ -1,4 +1,5 @@
 from pathlib import Path
+import tempfile
 import numpy as np
 import rasterio
 from matplotlib import pyplot as plt
@@ -14,28 +15,41 @@ ALLOWED_EXTS = {".tif", ".tiff", ".jp2"}
 def allowed_file(filename: str) -> bool:
     return Path(filename).suffix.lower() in ALLOWED_EXTS
 
-def compute_ndvi(src_path: Path) -> np.ndarray:
+def compute_ndvi(src_path: Path) -> np.memmap:
+    """Compute NDVI iterating over image blocks and store the result on disk.
+
+    The returned object is a ``numpy.memmap`` backed by a temporary file so that
+    very large rasters do not need to be fully loaded into RAM.
+    """
+
     with rasterio.open(src_path) as src:
-        red = src.read(1).astype("float32")
-        nir = src.read(4).astype("float32")
+        shape = (src.height, src.width)
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".ndvi")
+        ndvi = np.memmap(tmp.name, dtype="float32", mode="w+", shape=shape)
+
         nodata = src.nodata
-        if nodata is not None:
-            red = np.ma.masked_equal(red, nodata)
-            nir = np.ma.masked_equal(nir, nodata)
-        # Avoid divide-by-zero and invalid warnings during the NDVI calculation
-        with np.errstate(divide="ignore", invalid="ignore"):
-            ndvi = (nir - red) / (nir + red)
+        for _, window in src.block_windows(1):
+            red = src.read(1, window=window).astype("float32")
+            nir = src.read(4, window=window).astype("float32")
+            if nodata is not None:
+                red = np.ma.masked_equal(red, nodata)
+                nir = np.ma.masked_equal(nir, nodata)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                block = (nir - red) / (nir + red)
+            if np.ma.isMaskedArray(block):
+                block = block.filled(np.nan)
+            r0, c0 = window.row_off, window.col_off
+            ndvi[r0:r0 + window.height, c0:c0 + window.width] = np.round(block, 2)
 
-        # ``ndvi`` is a plain ``ndarray`` when the source image has no nodata
-        # values. Calling ``filled`` on such arrays raises ``AttributeError``
-        # which previously bubbled up and resulted in a 500 error during file
-        # uploads. Handle both masked and unmasked arrays gracefully.
-        if np.ma.isMaskedArray(ndvi):
-            ndvi = ndvi.filled(np.nan)
-
-        return np.round(ndvi, 2)
+        ndvi.flush()
+        return ndvi
 
 def save_png(ndvi: np.ndarray, out_path: Path) -> None:
+    """Save a NDVI array (or memmap) as a PNG image."""
+
+    if isinstance(ndvi, (str, Path)):
+        ndvi = np.memmap(ndvi, dtype="float32", mode="r")
+
     norm = Normalize(vmin=-1, vmax=1)
     cmap = plt.get_cmap("RdYlGn")
     rgba = (cmap(norm(ndvi)) * 255).astype("uint8")
