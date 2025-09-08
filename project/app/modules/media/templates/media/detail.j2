@@ -1,0 +1,20 @@
+{# templates/media/detail.j2 #}
+{% extends "base.j2" %}
+{% block content %}
+<div class="p-4 space-y-4">
+  <div class="flex items-start gap-6">
+    <div class="w-full max-w-xl border rounded p-3">
+      <div class="text-sm text-gray-600">UUID: {{ a.uuid }}</div>
+      <div class="text-lg font-semibold">{{ a.original_name }}</div>
+      <div class="text-sm">{{ a.mime }} · {{ a.width }}×{{ a.height }}</div>
+      {% if a.is_geo %}
+        <div class="mt-2 text-sm">CRS: {{ a.crs }} · mpp: {{ a.mpp }}</div>
+        <div id="tile" class="mt-4">
+          <img src="{{ url_for('media_api.tile', asset_id=a.id, z=12, x=1220, y=1940) }}" class="w-64 h-64 object-cover border rounded" />
+          <div class="text-xs text-gray-500 mt-1">Sample XYZ tile (z=12)</div>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}
