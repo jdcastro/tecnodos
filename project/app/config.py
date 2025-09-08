@@ -71,7 +71,7 @@ class Config:
     """
 
     CORE = True
-    MODULES = ["foliage", "foliage_report", "agrovista"]
+    MODULES = ["foliage", "foliage_report", "agrovista", "media"]
     THEME = "default"
     TITLE = os.getenv("TITLE")
     SECRET_KEY = os.getenv("SECRET_KEY")
@@ -120,6 +120,9 @@ class Config:
     # JSON configuration  UTF-8
     JSON_AS_ASCII = False
     JSONIFY_PRETTYPRINT_REGULAR = False
+
+    # Media storage
+    MEDIA_STORAGE_DIR = os.getenv("MEDIA_STORAGE_DIR")
 
     # overwrite for testing development purposes
     JWT_COOKIE_SECURE = True  # development purposes

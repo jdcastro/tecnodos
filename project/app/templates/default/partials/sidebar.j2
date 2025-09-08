@@ -87,6 +87,19 @@
 {% set sidebar_menu = {
     "menu": sidebar_menu.menu + [reportes] + [vgindex_menu]
 } %}
+{% set media_menu = {
+    "name": "Media",
+    "url": "#",
+    "icon": icon_inbox,
+    "submenu": [
+        {"name": "Subir", "url": url_for('media.library') },
+        {"name": "Importar", "url": url_for('media.upload_s3') },
+        {"name": "Importar Local", "url": url_for('media.upload_local') },
+    ]
+} %}
+{% set sidebar_menu = {
+    "menu": sidebar_menu.menu + [media_menu]
+} %}
 
 <aside id="sidebar" class="z-10 w-64 flex-shrink-0 h-full overflow-y-auto sidebar-hidden md:block bg-gray-800 text-white"
     aria-label="Sidebar">
