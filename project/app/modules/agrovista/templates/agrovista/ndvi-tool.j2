@@ -54,7 +54,7 @@
     <button id="enter-fullscreen" class="{{ base_button_classes }}" title="Pantalla completa" aria-label="Pantalla completa">Pantalla completa</button>
     <button id="exit-fullscreen"  class="{{ base_button_classes }} hidden" title="Salir pantalla completa" aria-label="Salir pantalla completa">Salir pantalla completa</button>
     <button id="fit-bounds"       class="{{ base_button_classes }}" title="Ajustar imagen" aria-label="Ajustar imagen">Ajustar imagen</button>
-    <label for="uploader" class="{{ base_button_classes }} cursor-pointer" title="Seleccionar archivo GeoTIFF/JP2" aria-label="Seleccionar archivo GeoTIFF/JP2">Seleccionar archivo</label>
+    <button id="open-media-picker" class="{{ base_button_classes }}" title="Seleccionar desde Media" aria-label="Seleccionar desde Media">Seleccionar archivo</button>
     <input type="file" id="uploader" accept=".tif,.tiff,.jp2" class="hidden" />
   </div>
 
@@ -102,6 +102,22 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
   <script>
+  // --- Media Picker Modal Styles ---
+  (function(){
+    const style = document.createElement('style');
+    style.textContent = `
+      .media-picker-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: none; }
+      .media-picker-modal { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; z-index: 1001; }
+      .media-picker-panel { width: 80vw; max-width: 1280px; max-height: 80vh; overflow: hidden; border-radius: 12px; background: var(--mp-bg, #fff); border: 1px solid rgba(0,0,0,0.1); box-shadow: 0 10px 30px rgba(0,0,0,0.25); }
+      .dark .media-picker-panel { --mp-bg: #0b0f19; }
+      .media-picker-header { display:flex; align-items:center; justify-content:space-between; padding: 10px 14px; border-bottom: 1px solid rgba(0,0,0,0.1); }
+      .media-picker-body { display:grid; grid-template-columns: 260px 1fr; gap: 12px; padding: 12px; height: calc(80vh - 52px); }
+      .media-picker-sidebar { overflow:auto; }
+      .media-picker-grid { overflow:auto; }
+    `;
+    document.head.appendChild(style);
+  })();
+
   /* -------------------------------
    * Map UI Module (IIFE)
    * Responsibilities: state, utils, map init, rulers, upload, draw events, fullscreen
@@ -135,6 +151,7 @@
       btnFit:   document.getElementById("fit-bounds"),
       btnFsIn:  document.getElementById("enter-fullscreen"),
       btnFsOut: document.getElementById("exit-fullscreen"),
+      btnOpenPicker: document.getElementById("open-media-picker"),
     };
 
     /* Ensure area box exists in DOM */
@@ -193,6 +210,165 @@
       return Math.abs(s)/2;
     }
     function setStatus(msg){ if(el.status) el.status.textContent = msg; }
+
+    /* ---------- Media Picker (Modal) ---------- */
+    const MP = (()=>{
+      const back = document.createElement('div'); back.className = 'media-picker-backdrop';
+      const wrap = document.createElement('div'); wrap.className = 'media-picker-modal';
+      const panel = document.createElement('div'); panel.className = 'media-picker-panel';
+
+      wrap.appendChild(panel);
+      document.body.appendChild(back);
+      document.body.appendChild(wrap);
+
+      const html = `
+        <div class="media-picker-header">
+          <div class="flex items-center gap-3">
+            <strong class="text-base">Biblioteca de Medios</strong>
+            <span class="text-xs text-gray-500">Selecciona un GeoTIFF</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="mp-close" class="px-2 py-1 rounded border">Cerrar</button>
+          </div>
+        </div>
+        <div class="media-picker-body">
+          <aside class="media-picker-sidebar">
+            <div class="space-y-3">
+              <div>
+                <label class="block text-xs mb-1">Buscar</label>
+                <input id="mp-q" type="text" class="w-full px-2 py-1 rounded border" placeholder="Nombre..." />
+              </div>
+              <div>
+                <label class="block text-xs mb-1">Tipo</label>
+                <select id="mp-type" class="w-full px-2 py-1 rounded border">
+                  <option value="geotiff">GeoTIFF</option>
+                  <option value="image">Imágenes</option>
+                  <option value="all">Todos</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs mb-1">Subir nuevo</label>
+                <input id="mp-upload" type="file" accept=".tif,.tiff,.png,.jpg,.jpeg" class="block w-full text-sm" />
+                <small id="mp-upload-msg" class="text-xs"></small>
+              </div>
+            </div>
+          </aside>
+          <section class="media-picker-grid">
+            <div id="mp-grid" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3"></div>
+          </section>
+        </div>
+      `;
+      panel.innerHTML = html;
+
+      const st = { items: [], type: 'geotiff', q: '' };
+      const ui = {
+        grid: panel.querySelector('#mp-grid'),
+        q: panel.querySelector('#mp-q'),
+        type: panel.querySelector('#mp-type'),
+        btnClose: panel.querySelector('#mp-close'),
+        upload: panel.querySelector('#mp-upload'),
+        uploadMsg: panel.querySelector('#mp-upload-msg'),
+      };
+
+      function getCookie(name){
+        const v = `; ${document.cookie}`; const p = v.split(`; ${name}=`);
+        if(p.length === 2) return p.pop().split(';').shift();
+      }
+
+      async function fetchAssets(){
+        try{
+          const res = await fetch('{{ url_for('media_api.list_assets') }}', { credentials: 'include' });
+          const data = await res.json();
+          if(Array.isArray(data)) st.items = data; else st.items = [];
+          render();
+        }catch(e){ st.items = []; render(); }
+      }
+
+      function matches(it){
+        const okType = st.type === 'all' ? true : (it.asset_type === st.type);
+        const okQ = st.q ? (it.original_name?.toLowerCase().includes(st.q)) : true;
+        return okType && okQ;
+      }
+      function fileUrl(it){ return '{{ url_for('media.serve_file', key='__KEY__') }}'.replace('__KEY__', encodeURIComponent(it.storage_key)); }
+
+      function render(){
+        const items = st.items.filter(matches);
+        const frag = document.createDocumentFragment();
+        for(const it of items){
+          const card = document.createElement('div');
+          card.className = 'rounded border overflow-hidden';
+          const isImg = (it.ext === 'png' || it.ext === 'jpg' || it.ext === 'jpeg');
+          const isTif = (it.ext === 'tif' || it.ext === 'tiff');
+          card.innerHTML = `
+            <div class="aspect-video bg-gray-100 flex items-center justify-center">
+              ${isImg ? `<img src="${fileUrl(it)}" alt="${it.original_name}" class="w-full h-full object-cover"/>` : `<span class="text-xs px-2 py-1 rounded bg-gray-200">${it.ext?.toUpperCase() || ''}</span>`}
+            </div>
+            <div class="p-2 flex items-center justify-between gap-2">
+              <div class="min-w-0"><div class="truncate text-sm" title="${it.original_name}">${it.original_name}</div><div class="text-xs text-gray-500">${it.width||'?'}×${it.height||'?'} • ${(it.size_bytes/1024).toFixed(1)} KB</div></div>
+              <button class="px-2 py-1 text-xs rounded ${isTif ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-600'}" ${isTif? '' : 'disabled'} data-id="${it.id}">Seleccionar</button>
+            </div>`;
+          frag.appendChild(card);
+        }
+        ui.grid.innerHTML = '';
+        ui.grid.appendChild(frag);
+      }
+
+      async function selectById(id){
+        const it = st.items.find(x => x.id == id);
+        if(!it) return;
+        try{
+          const resp = await fetch(fileUrl(it), { credentials: 'include' });
+          const blob = await resp.blob();
+          const file = new File([blob], it.original_name || ('asset_'+id+'.tif'), { type: it.mime || 'image/tiff' });
+          await onPick(file); // calls back into NDVI flow
+          hide();
+        }catch(e){ alert('No se pudo obtener el archivo seleccionado'); }
+      }
+
+      function onGridClick(ev){
+        const btn = ev.target.closest('button[data-id]');
+        if(!btn) return; selectById(btn.getAttribute('data-id'));
+      }
+
+      async function handleUpload(ev){
+        const file = ev.target.files && ev.target.files[0];
+        if(!file) return;
+        ui.uploadMsg.textContent = 'Subiendo...'; ui.uploadMsg.className = 'text-xs text-gray-600';
+        try{
+          const fd = new FormData(); fd.append('file', file, file.name);
+          const csrf = getCookie('csrf_access_token');
+          const res = await fetch('{{ url_for('media_api.upload_local_api') }}', {
+            method: 'POST', credentials: 'include', headers: { 'X-CSRF-TOKEN': csrf || '' }, body: fd
+          });
+          const data = await res.json().catch(()=>({}));
+          if(res.ok){
+            ui.uploadMsg.textContent = 'Subido. Procesando...'; ui.uploadMsg.className = 'text-xs text-green-700';
+            // Use same file for NDVI processing immediately
+            await onPick(file);
+            hide();
+          }else{
+            ui.uploadMsg.textContent = data.message || 'Error al subir'; ui.uploadMsg.className = 'text-xs text-red-700';
+          }
+        }catch(err){ ui.uploadMsg.textContent = 'Error de red'; ui.uploadMsg.className = 'text-xs text-red-700'; }
+        finally{ ev.target.value = ''; }
+      }
+
+      function show(){ back.style.display='block'; wrap.style.display='flex'; fetchAssets(); }
+      function hide(){ back.style.display='none'; wrap.style.display='none'; }
+
+      function wire(){
+        ui.btnClose.addEventListener('click', hide);
+        back.addEventListener('click', hide);
+        ui.grid.addEventListener('click', onGridClick);
+        ui.upload.addEventListener('change', handleUpload);
+        ui.q.addEventListener('input', (e)=>{ st.q = String(e.target.value||'').trim().toLowerCase(); render(); });
+        ui.type.addEventListener('change', (e)=>{ st.type = String(e.target.value||'geotiff'); render(); });
+      }
+
+      let onPick = async (_file)=>{}; // callback setter
+      wire();
+      return { show, hide, setOnPick: (fn)=>{ onPick = fn; } };
+    })();
 
     /* ---------- Leaflet Map ---------- */
     const map = L.map("map", { crs: L.CRS.Simple }).setView([0,0], 0);
@@ -414,6 +590,20 @@
       }
     }
 
+    // Picker callback uses same flow as local upload
+    MP.setOnPick(async (file)=>{
+      try{
+        setStatus("Procesando...");
+        const meta = await uploadFile(file);
+        applyMeta(meta);
+        if(overlay) map.removeLayer(overlay);
+        overlay = L.imageOverlay(ENDPOINTS.image(imageId), imgBounds).addTo(map);
+        fitImage();
+        setStatus(mppX != null ? `Escala automática: ~${mppX} m/px` : "Escala en píxeles (mpp no disponible)");
+        drawnItems.eachLayer(layer => { if(layer instanceof L.Polygon || layer instanceof L.Rectangle){ updateAreaForLayer(layer); } });
+      }catch(e){ setStatus("Error al procesar el archivo"); }
+    });
+
     /* ---------- Draw events ---------- */
     async function fetchProtein(verts){
       const res = await fetch(ENDPOINTS.protein, {
@@ -474,12 +664,13 @@
     }
 
     /* ---------- Wire UI Events ---------- */
-    el.uploader.addEventListener("change", handleFileChange);
+    if(el.uploader) el.uploader.addEventListener("change", handleFileChange);
     el.btnFit.addEventListener("click", fitImage);
     el.btnFsIn.addEventListener("click", enterFullscreen);
     el.btnFsOut.addEventListener("click", exitFullscreen);
     document.addEventListener("fullscreenchange", onFsChange);
     window.addEventListener("resize", () => { map.invalidateSize(); scheduleRulersRedraw(); });
+    if(el.btnOpenPicker){ el.btnOpenPicker.addEventListener('click', ()=> MP.show()); }
   })();
   </script>
 {% endblock %}
