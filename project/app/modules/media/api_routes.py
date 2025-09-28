@@ -1,3 +1,5 @@
+"""Puntos finales para gestionar activos multimedia."""
+
 from __future__ import annotations
 
 from flask import jsonify, request
@@ -12,12 +14,16 @@ from .models import Asset
 
 @api.route("/ping", methods=["GET"])
 def ping():
+    """Responder con un mensaje de salud para comprobar la API de media."""
+
     return jsonify(message="pong from media API")
 
 
 @api.route("/assets", methods=["GET"])
 @login_required
 def list_assets():
+    """Listar los metadatos de los activos registrados ordenados por fecha."""
+
     items = (
         Asset.query.order_by(Asset.created_at.desc())
         .with_entities(
@@ -39,6 +45,8 @@ def list_assets():
     )
 
     def to_dict(row):
+        """Transformar un registro de `Asset` en un diccionario serializable."""
+
         return {
             "id": row.id,
             "uuid": row.uuid,
@@ -61,6 +69,8 @@ def list_assets():
 @api.route("/upload", methods=["POST"])
 @login_required
 def upload_local_api():
+    """Almacenar un archivo recibido mediante la clave `file` del formulario."""
+
     if "file" not in request.files:
         return jsonify({"message": "No file part"}), 400
     file = request.files["file"]
@@ -83,6 +93,8 @@ def upload_local_api():
 @api.route("/assets/<int:asset_id>", methods=["DELETE"])
 @login_required
 def delete_asset(asset_id: int):
+    """Eliminar un activo existente identificado por su ID numérico."""
+
     try:
         ctrl = MediaController()
         ok = ctrl.delete_asset(asset_id)

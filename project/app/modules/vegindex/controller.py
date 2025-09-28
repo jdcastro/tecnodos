@@ -1,3 +1,5 @@
+"""Rutinas de negocio para transformar fuentes en índices de vegetación."""
+
 from __future__ import annotations
 
 from typing import Dict, Optional, Sequence
@@ -17,6 +19,30 @@ def compute_from_source(
     source: str,
     bbox: Optional[Sequence[int]] = None,
 ) -> Dict:
+    """Derivar estadísticas VARI y proteína estimada desde un recurso raster.
+
+    La función identifica el backend de almacenamiento adecuado en función de la
+    URI ``source``, descarga el archivo en memoria y extrae los canales RGB
+    combinando herramientas de la capa ``services``. Una vez normalizados los
+    canales y aplicado el enmascaramiento respecto al valor ``nodata``, se
+    calcula el índice VARI. Si se especifica ``bbox`` el resultado se recorta a
+    la ventana solicitada garantizando límites válidos.
+
+    Con la matriz resultante se filtran los valores inválidos, se proyecta la
+    distribución hacia el vector de proteína mediante ``vari_to_protein_vector``
+    y se construye un diccionario con las estadísticas relevantes para su
+    exposición vía API o plantillas.
+
+    :param source: Localizador de la imagen en formato ``backend:/ruta`` (por
+        ejemplo ``local:/data/archivo.tif`` o ``s3://bucket/clave``).
+    :param bbox: Secuencia opcional con cuatro enteros ``[xmin, ymin, xmax, ymax]``
+        que delimita la porción de la escena a analizar.
+    :returns: Diccionario con el conteo de píxeles válidos, estadísticas de VARI,
+        forma del arreglo y media de proteína estimada.
+    :raises ValueError: Propagada desde la capa de almacenamiento si la fuente
+        no es accesible o tiene un formato no soportado.
+    """
+
     storage, path = get_storage_and_path(source)
     data = storage.read_bytes(path)
     red, green, blue, nodata = load_rgb_from_bytes(data)

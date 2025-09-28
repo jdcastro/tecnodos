@@ -1,3 +1,5 @@
+"""Controlador de lógica de negocio para la gestión de archivos multimedia."""
+
 from __future__ import annotations
 
 import os
@@ -20,7 +22,35 @@ from .models import Asset, AssetType, StorageLocation
 
 
 class MediaController:
+    """Orquesta la ingestión, inspección y eliminación de activos multimeda.
+
+    La clase encapsula las decisiones de negocio relacionadas con cómo se
+    almacenan los archivos subidos por los usuarios, qué metadatos se
+    derivan de su contenido y cómo se sincronizan esas características con la
+    base de datos relacional. De este modo la capa de enrutamiento puede
+    delegar la manipulación de archivos y la persistencia sin conocer los
+    detalles del sistema de ficheros ni las transformaciones realizadas.
+    """
+
     def save_local_upload(self, file: FileStorage) -> Asset:
+        """Guardar un archivo recibido vía formulario dentro del almacenamiento local.
+
+        El proceso valida la presencia de un nombre de archivo, garantiza que el
+        tipo esté permitido, calcula el hash SHA-256 y el tamaño exacto sin
+        duplicar IO innecesaria, persiste el archivo físico en disco y genera un
+        registro `Asset` enriquecido con la información derivada (metadatos MIME,
+        dimensiones de imagen, datos geoespaciales, etc.). Finalmente consolida
+        los cambios en la base de datos para dejar el activo listo para su
+        consumo mediante la API.
+
+        :param file: Objeto suministrado por Werkzeug que encapsula el archivo
+            enviado desde un formulario HTML, incluyendo el stream subyacente.
+        :returns: Instancia de ``Asset`` recién creada y sincronizada con la
+            sesión en la base de datos.
+        :raises ValueError: Si el archivo no existe o su extensión no está
+            permitida por la configuración de la aplicación.
+        """
+
         if not file or not getattr(file, "filename", None):
             raise ValueError("No file provided")
 
@@ -87,6 +117,19 @@ class MediaController:
         return asset
 
     def delete_asset(self, asset_id: int) -> bool:
+        """Retirar un activo de la base de datos y su archivo físico asociado.
+
+        La operación busca de forma perezosa el activo solicitado, detiene la
+        ejecución si no existe un registro coincidente y, en caso de hallarlo,
+        elimina el archivo del almacenamiento local antes de borrar la fila en
+        la base de datos. Los fallos al eliminar el archivo físico se ignoran de
+        forma deliberada para priorizar la consistencia del catálogo de activos.
+
+        :param asset_id: Identificador entero primario del activo objetivo.
+        :returns: ``True`` si el activo fue eliminado; ``False`` cuando no se
+            encontró registro alguno con el identificador indicado.
+        """
+
         asset = Asset.query.get(asset_id)
         if not asset:
             return False
